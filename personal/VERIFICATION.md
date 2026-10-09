@@ -135,3 +135,39 @@ Actual Toss authentication, allowed-IP setup, fills, scheduled broker execution,
 forward strategy evidence and profitability remain unverified. Exact-head remote
 CI and the preserved public account's post-restart smoke belong to the delivery
 record after deployment.
+
+## Broker dashboard display repair — 2026-10-09
+
+Before this change, `/api/state` always supplied the local paper snapshot for
+dashboard totals even with `toss-live` selected. Connecting while paper mode was
+selected and then switching modes also cleared the automation account cache.
+An offline regression reproduced the missing broker dashboard field before the
+implementation; the connection success flag did not imply a dashboard balance.
+
+- A separate `dashboard_account` reads the selected broker under the existing
+  account/client locks with a 30-second cache and an explicit CSRF-protected
+  refresh route. Local paper data and the manual order endpoint remain separate.
+- The balance read does not run signals, inspect fills, settle intents, place
+  orders, change daily baselines or start automation. Known pending orders do
+  not hide balances; their count is informational and existing trading gates
+  remain unchanged. Identity/environment mismatches and read failures display
+  unavailable balances instead of falling back to paper or unlabelled old data.
+- Dashboard/portfolio default to the selected broker with a display-only local
+  paper switch. Broker balances, domestic holdings, account label and timestamp
+  use the same snapshot. Manual paper orders/history/export appear in the local
+  paper view. Public watchlist/chart data retains its separate source label.
+- Toss keeps its KRW trading-capital label. Missing total/realized profit is
+  shown as broker-unavailable, not derived from local initial capital. Holdings
+  outside the normalized domestic view are counted and disclosed as excluded.
+- All 149 offline tests passed in 27.174 seconds, including eight dashboard
+  regressions and the read-only HTTP refresh/CSRF contract. Cache coalescing,
+  force refresh, account/mode invalidation, empty accounts, missing average cost,
+  failed refresh, wrong identity and unchanged pending ledgers are exercised.
+- Edge at 1440/390 passed distinct fake-broker vs paper totals, holdings and
+  allocation, display switching, one isolated manual paper order, failed lookup
+  without paper fallback, restoration and page-width checks. Broker orders and
+  automatic intents remained zero. JavaScript syntax and whitespace checks pass.
+
+Actual deployment, real broker read-only response and exact-head CI observations
+are recorded in the delivery separately. No real order or scheduled broker run
+is implied by this display repair.

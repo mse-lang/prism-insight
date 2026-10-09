@@ -113,6 +113,10 @@
     });
     $("view-label").textContent = labels[view];
     document.title = "PRISM · " + labels[view];
+    if (state) {
+      renderDashboardSummary();
+      if (["dashboard", "portfolio"].includes(view)) refreshState(true);
+    }
     renderModeBadge();
     if (view === "autotrade" && state) refreshAutotrade();
     else scheduleAutoPoll();
@@ -120,16 +124,21 @@
 
   async function refreshState(quiet = false) {
     try {
-      state = await api("/api/state");
+      state = !quiet && state && showingConnectedAccount() ? await api("/api/dashboard/refresh", {}) : await api("/api/state");
       renderState();
-      if (!selectedSymbol) selectedSymbol = state.watchlist?.[0]?.symbol || state.positions?.[0]?.symbol || "";
+      if (!selectedSymbol) selectedSymbol = state.watchlist?.[0]?.symbol || currentDashboardAccount().positions?.[0]?.symbol || "";
       // Account snapshots contain lightweight quotes without daily bars.
       // Fetch the selected quote rather than replacing its chart with that list.
       if (selectedSymbol) await selectStock(selectedSymbol);
       else { selectedQuote = null; renderSelected(); }
       alertMessage((state.warnings || []).map((warning) => typeof warning === "string" ? warning : warning.message || "시세 연결을 확인하세요.").join("\n"), true);
-      if (!quiet) showToast("시세와 모의 계좌를 새로 불러왔습니다.");
+      if (!quiet) showToast("시세와 선택한 계좌를 새로 불러왔습니다.");
     } catch (error) {
+      if (state && showingConnectedAccount()) {
+        state.dashboard_account = { ...currentDashboardAccount(), status: "unavailable", cash: null, equity: null, positions: [],
+          unrealized_pnl: null, realized_pnl: null, message: "계좌 조회를 완료하지 못했습니다. 다시 조회하세요." };
+        renderDashboardSummary(); renderPositions(); renderModeBadge();
+      }
       alertMessage(error.message);
     }
   }
@@ -138,15 +147,7 @@
     $("welcome").textContent = displayName;
     $("sidebar-name").textContent = displayName;
     $("sidebar-avatar").textContent = displayName.charAt(0).toUpperCase();
-    $("stat-equity").textContent = won(state.equity);
-    $("stat-cash").textContent = won(state.cash);
-    $("stat-unrealized").textContent = signedWon(state.unrealized_pnl);
-    $("stat-unrealized").className = tone(state.unrealized_pnl);
-    $("stat-realized").textContent = signedWon(state.realized_pnl);
-    $("stat-realized").className = tone(state.realized_pnl);
-    const change = hasNumber(state.equity) && number(state.initial_cash) > 0 ? (number(state.equity) / number(state.initial_cash) - 1) * 100 : null;
-    $("stat-return").replaceChildren(node("span", tone(change), percent(change)), document.createTextNode("초기 모의자금 대비"));
-    $("stat-position-count").textContent = "보유 종목 " + (state.positions || []).length + "개";
+    renderDashboardSummary();
     const demo = state.provider === "demo";
     $("source-tag").textContent = demo ? "합성 데모 시세" : "네이버 공개 시세";
     $("source-description").textContent = demo ? "학습용 합성 데이터입니다. 실제 시장 가격과 다릅니다." : "공개 시세는 지연·누락될 수 있습니다. 종목별 기준 시각을 확인하세요.";
@@ -166,6 +167,77 @@
     updateOrder();
     if (state.autotrade) setAutotrade(state.autotrade);
   }
+
+  let accountView = null;
+  let accountViewTouched = false;
+  function chooseDefaultAccountView() {
+    if (!accountViewTouched) accountView = state?.autotrade?.mode && state.autotrade.mode !== "paper" ? "connected" : "paper";
+    if (!accountView) accountView = "paper";
+  }
+  function showingConnectedAccount() { chooseDefaultAccountView(); return accountView === "connected"; }
+  function currentDashboardAccount() {
+    if (!state) return { status: "unavailable", cash: null, equity: null, positions: [] };
+    if (!showingConnectedAccount()) return state;
+    return state.dashboard_account || { kind: "broker", mode: state.autotrade?.mode, provider: state.autotrade?.connection?.provider,
+      status: "unavailable", account_masked: state.autotrade?.connection?.account_masked || "", cash: null, equity: null,
+      positions: [], unrealized_pnl: null, realized_pnl: null, initial_cash: null,
+      message: "연결 계좌를 조회하지 못했습니다. 설정한 계좌를 확인하고 다시 조회하세요." };
+  }
+  function connectedAccountName(account) {
+    if (!account.mode || account.mode === "paper") return "연결 계좌";
+    return (account.provider === "toss" ? "토스증권" : "한국투자증권") + (account.mode === "kis-paper" ? " 모의투자" : " 실계좌");
+  }
+  function dashboardMoney(account, field, pnl = false) {
+    if (showingConnectedAccount() && account.status !== "ok") return "조회 불가";
+    if (!hasNumber(account[field])) return showingConnectedAccount() && pnl ? "증권사 미제공" : "확인 불가";
+    return pnl ? signedWon(account[field]) : won(account[field]);
+  }
+  function renderDashboardSummary() {
+    const connected = showingConnectedAccount(), account = currentDashboardAccount();
+    const unavailable = connected && account.status !== "ok";
+    const toss = connected && (account.provider === "toss" || account.equity_basis === "krw-trading-capital");
+    $("stat-equity-label").textContent = toss ? "원화 거래 기준 자산" : "총 평가자산";
+    $("stat-cash-label").textContent = toss ? "원화 현금 매수 가능액" : connected ? "계좌 현금 잔고" : "주문 가능 금액";
+    $("stat-cash-help").textContent = connected ? "증권사 계좌의 최근 조회 결과" : "모의 계좌의 현금 잔고";
+    $("stat-realized-help").textContent = connected ? "미제공 손익은 계산하지 않습니다" : "거래 수수료 반영";
+    $("stat-equity").textContent = dashboardMoney(account, "equity");
+    $("stat-cash").textContent = dashboardMoney(account, "cash");
+    $("stat-unrealized").textContent = dashboardMoney(account, "unrealized_pnl", true);
+    $("stat-realized").textContent = dashboardMoney(account, "realized_pnl", true);
+    $("stat-unrealized").className = unavailable || !hasNumber(account.unrealized_pnl) ? "neutral" : tone(account.unrealized_pnl);
+    $("stat-realized").className = unavailable || !hasNumber(account.realized_pnl) ? "neutral" : tone(account.realized_pnl);
+    if (connected) {
+      $("stat-return").replaceChildren(document.createTextNode(unavailable ? "계좌 조회 실패 · 다시 조회하세요" : "증권사 조회 기준 " + dateTime(account.as_of || account.fetched_at, true)));
+      $("stat-position-count").textContent = unavailable ? "보유 종목 조회 불가" : "계좌 보유 " + (hasNumber(account.total_position_count) ? wonFormat.format(number(account.total_position_count)) : (account.positions || []).length) + "종목";
+    } else {
+      const change = hasNumber(state.equity) && number(state.initial_cash) > 0 ? (number(state.equity) / number(state.initial_cash) - 1) * 100 : null;
+      $("stat-return").replaceChildren(node("span", tone(change), percent(change)), document.createTextNode("초기 모의자금 대비"));
+      $("stat-position-count").textContent = "보유 종목 " + (state.positions || []).length + "개";
+    }
+    $("stats-grid").setAttribute("aria-label", connected ? connectedAccountName(account) + " 현황" : "모의 계좌 현황");
+    $("account-view-select").value = accountView;
+    $("account-display-name").textContent = connected ? connectedAccountName(account) + (account.account_masked ? " · " + account.account_masked : "") : "로컬 모의매매 계좌";
+    $("account-display-help").textContent = unavailable ? account.message || "계좌 조회 불가. 다시 조회하세요." : toss
+      ? "원화 현금 매수 가능액 + 국내 주식 평가액 기준입니다. 전체 계좌 순자산과 구분됩니다."
+      : connected ? "연결 계좌의 읽기 전용 잔고입니다." : "로컬 모의 잔고와 모의 거래 기록입니다.";
+    if (!unavailable && connected && number(account.excluded_positions_count) > 0) $("account-display-help").textContent += " 다른 시장 또는 관리 대상 외 보유 " + account.excluded_positions_count + "종목은 이 보유 표에서 제외됩니다.";
+    if (!unavailable && connected && number(account.open_order_count) > 0) $("account-display-help").textContent += " 미체결·조건 주문 " + account.open_order_count + "건은 증권사에서 확인하세요.";
+    $("account-paper-button").classList.toggle("hidden", !connected);
+    const mainAccountView = ["dashboard", "portfolio"].includes(currentView());
+    $("account-display-toolbar").classList.toggle("hidden", !mainAccountView);
+    document.querySelector(".sidebar-note strong").textContent = mainAccountView && connected ? connectedAccountName(account) : "모의매매 계좌";
+    document.querySelector(".dashboard-grid").classList.toggle("broker-view", connected);
+    document.querySelector(".order-panel").classList.toggle("hidden", connected);
+    document.querySelector(".recent-panel").classList.toggle("hidden", connected);
+    $("orders-table").closest(".panel").classList.toggle("hidden", connected);
+    document.querySelectorAll(".export-link").forEach(el => el.classList.toggle("hidden", connected));
+    document.querySelector(".holdings-panel .mini-badge").textContent = connected ? connectedAccountName(account) : "모의매매";
+  }
+  function changeAccountView(value) {
+    accountView = value; accountViewTouched = true;
+    renderDashboardSummary(); renderPositions(); renderModeBadge();
+  }
+
   function populateSettings() {
     $("settings-name").value = state.settings?.display_name || "나의 투자 데스크";
     $("settings-limit").value = state.settings?.max_position_pct ?? 30;
@@ -414,43 +486,46 @@
     return cell;
   }
   function renderPositions() {
-    const positions = state.positions || [];
+    const account = currentDashboardAccount(), connected = showingConnectedAccount();
+    const unavailable = connected && account.status !== "ok";
+    const positions = unavailable ? [] : (account.positions || []);
+    const emptyText = unavailable ? "연결 계좌 보유 종목을 조회하지 못했습니다. 다시 조회하세요." : connected ? "조회된 국내 보유 종목이 없습니다." : "아직 보유 종목이 없습니다. 첫 모의 주문으로 포트폴리오를 시작하세요.";
     const rows = document.createDocumentFragment();
     const minis = document.createDocumentFragment();
     positions.forEach((position) => {
       const row = node("tr");
-      row.append(stockCell(position), node("td", "number", wonFormat.format(number(position.quantity)) + "주"), node("td", "number", won(position.average_cost)), node("td", "number", won(position.price)), node("td", "number", won(position.market_value)), node("td", "number " + tone(position.unrealized_pnl), signedWon(position.unrealized_pnl)), node("td", "number", percent(position.weight_pct, false)));
+      row.append(stockCell(position), node("td", "number", wonFormat.format(number(position.quantity)) + "주"), node("td", "number", won(position.average_cost)), node("td", "number", won(position.price)), node("td", "number", won(position.market_value)), node("td", "number " + tone(position.unrealized_pnl), (hasNumber(position.unrealized_pnl) ? signedWon(position.unrealized_pnl) : "미제공")), node("td", "number", percent(position.weight_pct, false)));
       rows.append(row);
       const item = node("div", "mini-position");
       const label = node("div");
       label.append(node("strong", "", position.name), node("span", "", wonFormat.format(number(position.quantity)) + "주 · " + percent(position.weight_pct, false)));
       const values = node("div");
-      values.append(node("strong", "", won(position.market_value)), node("span", "position-pnl " + tone(position.unrealized_pnl), signedWon(position.unrealized_pnl)));
+      values.append(node("strong", "", won(position.market_value)), node("span", "position-pnl " + tone(position.unrealized_pnl), (hasNumber(position.unrealized_pnl) ? signedWon(position.unrealized_pnl) : "미제공")));
       item.append(label, values);
       minis.append(item);
     });
     if (!positions.length) {
       const empty = node("tr");
-      const cell = node("td", "empty-cell", "아직 보유 종목이 없습니다. 첫 모의 주문으로 포트폴리오를 시작하세요.");
+      const cell = node("td", "empty-cell", emptyText);
       cell.colSpan = 7;
       empty.append(cell);
       rows.append(empty);
-      minis.append(node("p", "empty-text", "첫 모의 주문으로 포트폴리오를 시작하세요."));
+      minis.append(node("p", "empty-text", emptyText));
     }
     $("positions-table").replaceChildren(rows);
     $("mini-positions").replaceChildren(minis);
-    drawAllocation(positions);
+    drawAllocation(positions, account);
   }
-  function drawAllocation(positions) {
-    if (!hasNumber(state.equity) || !hasNumber(state.cash) || positions.some((position) => !hasNumber(position.market_value))) {
+  function drawAllocation(positions, account = currentDashboardAccount()) {
+    if (!hasNumber(account.equity) || !hasNumber(account.cash) || positions.some((position) => !hasNumber(position.market_value))) {
       $("allocation-chart").replaceChildren(node("p", "empty-text", "자산 구성 확인 불가\n보유 종목의 시세를 확인할 수 없습니다."));
       $("allocation-legend").replaceChildren(node("p", "field-help", "확인되지 않은 평가금액과 자산 비중을 0으로 계산하지 않습니다."));
       return;
     }
-    const equity = number(state.equity);
+    const equity = number(account.equity);
     const items = positions.map((position, index) => ({ name: position.name, value: number(position.market_value), color: palette[index % palette.length] }));
-    items.push({ name: "현금", value: number(state.cash), color: "#e7e1ef" });
-    const svg = svgNode("svg", { viewBox: "0 0 160 160", role: "img", "aria-label": "모의 계좌 자산 구성. " + items.map((item) => item.name + " " + percent(equity ? item.value / equity * 100 : 0, false)).join(", ") });
+    items.push({ name: showingConnectedAccount() ? "현금 매수 가능액" : "현금", value: number(account.cash), color: "#e7e1ef" });
+    const svg = svgNode("svg", { viewBox: "0 0 160 160", role: "img", "aria-label": (showingConnectedAccount() ? "연결 계좌 자산 구성. " : "모의 계좌 자산 구성. ") + items.map((item) => item.name + " " + percent(equity ? item.value / equity * 100 : 0, false)).join(", ") });
     svg.append(svgNode("circle", { cx: 80, cy: 80, r: 61, fill: "none", stroke: "#f2eef6", "stroke-width": 14 }));
     const circumference = 2 * Math.PI * 61;
     let offset = 0;
@@ -462,7 +537,7 @@
       }
     });
     const title = svgNode("text", { x: 80, y: 73, class: "allocation-center", "font-size": 10 });
-    title.textContent = "모의 총 자산";
+    title.textContent = showingConnectedAccount() ? (account.equity_basis === "krw-trading-capital" ? "원화 거래 기준 자산" : "연결 계좌 자산") : "모의 총 자산";
     const total = svgNode("text", { x: 80, y: 94, class: "allocation-center", "font-size": 14, "font-weight": 600 });
     total.textContent = equity >= 10000 ? decimalFormat.format(equity / 10000) + "만원" : won(equity);
     svg.append(title, total);
@@ -632,11 +707,16 @@
   function renderModeBadge() {
     renderGlobalAlert();
     const autoView = currentView() === "autotrade";
-    const mode = autotrade?.mode || "paper";
+    const connected = ["dashboard", "portfolio"].includes(currentView()) && showingConnectedAccount();
+    const account = currentDashboardAccount();
+    const mode = autoView ? autotrade?.mode || "paper" : connected ? account.mode : "paper";
+    const label = connected ? connectedAccountName(account) : autoView ? autoModeNames[mode] || "계좌 확인 필요" : "모의매매";
     const badge = $("header-mode");
-    badge.replaceChildren(node("span", "status-dot"), document.createTextNode(autoView ? autoModeNames[mode] || "계좌 확인 필요" : "모의매매"));
-    badge.classList.toggle("live-header", autoView && isLiveMode(mode));
-    $("footer-message").textContent = autoView ? "자동매매 계좌와 실행 상태를 확인하세요. 분석과 전략은 수익을 보장하지 않습니다." : "분석은 판단을 돕는 참고 자료입니다. 이 화면의 수동 주문은 모의매매로 기록됩니다.";
+    badge.replaceChildren(node("span", "status-dot"), document.createTextNode(label));
+    badge.classList.toggle("live-header", isLiveMode(mode));
+    $("footer-message").textContent = connected ? "연결 계좌는 읽기 전용으로 표시합니다. 모의매매 연습은 로컬 모의계좌에서 할 수 있습니다."
+      : autoView ? "자동매매 계좌와 실행 상태를 확인하세요. 분석과 전략은 수익을 보장하지 않습니다."
+      : "분석은 판단을 돕는 참고 자료입니다. 이 화면의 수동 주문은 모의매매로 기록됩니다.";
   }
   function scheduleAutoPoll() {
     clearTimeout(autoPollTimer);
@@ -958,6 +1038,8 @@
   $("order-quantity").addEventListener("input", updateOrder);
   $("order-form").addEventListener("submit", reviewOrder);
   $("confirm-order-button").addEventListener("click", confirmOrder);
+  $("account-view-select").addEventListener("change", event => changeAccountView(event.target.value));
+  $("account-paper-button").addEventListener("click", () => changeAccountView("paper"));
   $("refresh-button").addEventListener("click", () => busy($("refresh-button"), () => refreshState()));
   $("add-watch-button").addEventListener("click", () => { $("search-dialog").showModal(); $("stock-search").focus(); });
   $("search-form").addEventListener("submit", searchStocks);

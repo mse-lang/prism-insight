@@ -94,6 +94,25 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("/api/autotrade/check", "POST", {})[0], 200)
         self.assertFalse(self.request("/api/state")[1]["orders"])
 
+    def test_dashboard_refresh_is_read_only_and_csrf_protected(self):
+        snapshot = {"kind": "broker", "mode": "toss-live", "provider": "toss", "status": "ok",
+                    "cash": 2500000, "equity": 2500000, "positions": []}
+        with patch.object(self.desk.autotrade, "dashboard_snapshot", return_value=snapshot) as lookup:
+            state = self.request("/api/state")[1]
+            self.assertEqual(state["dashboard_account"]["cash"], 2500000)
+            self.assertEqual(state["cash"], 10000000)
+            lookup.reset_mock()
+            self.assertEqual(self.request("/api/dashboard/refresh", "POST", {}, {"X-CSRF-Token": ""})[0], 403)
+            self.assertEqual(self.request("/api/dashboard/refresh")[0], 404)
+            self.assertEqual(self.request("/api/dashboard/refresh", "POST", {"order": True})[0], 400)
+            lookup.assert_not_called()
+            status, refreshed = self.request("/api/dashboard/refresh", "POST", {})
+            self.assertEqual(status, 200)
+            lookup.assert_called_once_with(refresh=True)
+            self.assertEqual(refreshed["dashboard_account"], snapshot)
+            self.assertFalse(refreshed["orders"])
+            self.assertFalse(refreshed["autotrade"]["running"])
+
     def test_toss_account_lookup_is_csrf_protected_post_without_orders(self):
         payload = {"client_id": "offline-client", "client_secret": "offline-secret"}
         accounts = {"accounts": [{"account_seq": 1, "account_masked": "12*******01", "account_type": "BROKERAGE"}]}

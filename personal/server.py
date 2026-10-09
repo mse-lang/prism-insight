@@ -33,7 +33,7 @@ class Desk:
         self.provider = provider
         self.autotrade = AutoTrader(self.store, self.market)
 
-    def state(self):
+    def state(self, *, refresh_account=False):
         quotes = self.market.quotes(self.store.required_symbols())
         state = self.store.snapshot(quotes)
         state.update({"csrf_token": self.csrf, "provider": self.provider, "mode": "paper",
@@ -48,6 +48,7 @@ class Desk:
         if any(q.get("status") != "ok" for q in quotes.values()):
             warnings.append("일부 시세를 확인하지 못했습니다. 해당 종목 주문은 차단됩니다.")
         state["warnings"] = list(dict.fromkeys(warnings))
+        state["dashboard_account"] = self.autotrade.dashboard_snapshot(refresh=refresh_account)
         state["autotrade"] = self.autotrade.state()
         return state
 
@@ -199,6 +200,10 @@ def make_server(desk, port=8866):
                 elif path == "/api/prism-analysis":
                     quote = desk.market.quote(valid_symbol(payload.get("symbol")))
                     self.send_json({"job": desk.jobs.start(quote["symbol"], quote["name"])}, 202)
+                elif path == "/api/dashboard/refresh":
+                    if payload:
+                        raise ValueError("계좌 새로고침에는 추가 입력이 필요하지 않습니다.")
+                    self.send_json(desk.state(refresh_account=True))
                 elif path == "/api/autotrade/config":
                     self.send_json(desk.autotrade.update_config(payload))
                 elif path == "/api/autotrade/connect":

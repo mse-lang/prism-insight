@@ -202,6 +202,7 @@ class AutoTrader:
         self.broker = self.connection_config = None
         self.broker_ready = False
         self.account = None
+        self.dashboard_cache = None
         self.preview = []
         self.info = {"status": "stopped", "message": "자동매매는 중지 상태입니다. 설정을 확인한 뒤 시작해주세요.",
                      "last_run": None, "next_run": None}
@@ -344,6 +345,82 @@ class AutoTrader:
                                "account_masked": masked,
                                "ready": bool(connection and self.broker_ready), "message": "증권사 계좌 조회를 확인했습니다." if connection and self.broker_ready else "증권사 API 연결과 계좌 조회 확인이 필요합니다."}}
 
+    def dashboard_snapshot(self, *, refresh=False):
+        """Read balances without running signals, reconciling intents or ordering.
+
+        The local paper ledger remains separate. An unavailable broker response
+        never becomes a paper balance, a zero estimate or an unlabelled old value.
+        """
+        mode = self.config()["mode"]
+        if mode == "paper":
+            self.dashboard_cache = None
+            return None
+        provider = "toss" if mode == "toss-live" else "kis"
+        base = {"kind": "broker", "mode": mode, "provider": provider, "status": "unavailable",
+                "cash": None, "equity": None, "positions": [], "initial_cash": None,
+                "unrealized_pnl": None, "realized_pnl": None, "as_of": None, "fetched_at": None,
+                "total_position_count": None, "excluded_positions_count": None,
+                "equity_basis": "krw-trading-capital" if provider == "toss" else "account-equity",
+                "account_masked": self.state()["connection"]["account_masked"],
+                "message": "설정한 증권사 계좌를 연결한 뒤 잔고를 다시 조회하세요."}
+        # A trading cycle may hold this lock for broker I/O. Keep the page usable
+        # rather than waiting indefinitely or issuing a concurrent client token.
+        if not self.lock.acquire(timeout=2):
+            return {**base, "message": "다른 계좌 점검이 진행 중입니다. 잠시 후 새로고침하세요."}
+        try:
+            if self.config()["mode"] != mode:
+                return {**base, "message": "계좌 설정이 변경됐습니다. 다시 조회하세요."}
+            if not self.broker or not self.connection_config or self._connection_mode() != mode:
+                self.dashboard_cache = None
+                return base
+            key = (mode, self._namespace(mode), id(self.broker))
+            cached = self.dashboard_cache
+            if not refresh and cached and cached[0] == key and time.monotonic() < cached[1]:
+                return copy.deepcopy(cached[2])
+            try:
+                with self._exclusive():
+                    expected = self.connection_config.get("verified_account_identity") or self.broker.account_identity
+                    account = self.broker.account()
+                    # Open orders block trading, but must not hide account balances.
+                    self._validate_account({**account, "open_orders": []})
+                    if not expected or account.get("account_identity") != expected or self.broker.account_identity != expected or account.get("environment") != self.broker.environment:
+                        raise ValueError("계좌 조회 identity가 일치하지 않습니다.")
+                    stamp = datetime.fromisoformat(account["as_of"].replace("Z", "+00:00"))
+                    if stamp.tzinfo is None:
+                        raise ValueError("계좌 조회 시각을 확인하지 못했습니다.")
+                    positions = []
+                    equity = float(numeric(account["equity"], 0, Decimal("1e15")))
+                    for row in account["positions"]:
+                        if row["quantity"] == 0:
+                            continue
+                        quantity, price = row["quantity"], float(numeric(row["price"], 1, Decimal("1e15")))
+                        value = price * quantity
+                        average = row.get("average_cost")
+                        average = float(numeric(average, 0, Decimal("1e15"))) if average is not None else None
+                        positions.append({"symbol": row["symbol"], "name": row.get("name") or row["symbol"],
+                                          "quantity": quantity, "price": price, "market_value": value,
+                                          "average_cost": average,
+                                          "unrealized_pnl": (price - average) * quantity if average is not None else None,
+                                          "weight_pct": value / equity * 100 if equity else None})
+                    view = {**base, "status": "ok", "cash": account["cash"], "equity": account["equity"],
+                            "positions": positions, "as_of": account["as_of"], "fetched_at": self.clock().isoformat(),
+                            "total_position_count": self._position_count(account),
+                            "excluded_positions_count": account.get("excluded_positions_count", 0),
+                            "open_order_count": len(account.get("open_orders") or []),
+                            "equity_basis": account.get("equity_basis") or base["equity_basis"],
+                            "message": "증권사에서 읽기 전용으로 조회한 잔고입니다."}
+                    self.broker_ready = True
+                    with self.state_lock:
+                        self.account = {"mode": mode, **{field: account.get(field) for field in
+                            ("cash", "equity", "positions", "as_of", "total_position_count", "equity_basis",
+                             "excluded_positions_count", "order_visibility", "venue_scope")}}
+            except Exception:
+                view = {**base, "message": "증권사 잔고를 조회하지 못했습니다. 연결과 허용 IP를 확인하고 다시 조회하세요."}
+            self.dashboard_cache = (key, time.monotonic() + 30, copy.deepcopy(view))
+            return view
+        finally:
+            self.lock.release()
+
     def _pending(self, db=None):
         sql = "SELECT * FROM auto_intents WHERE status IN ('submitting','pending','partial','uncertain') ORDER BY created_at"
         if db:
@@ -429,6 +506,8 @@ class AutoTrader:
                 self.store.set_meta(db, "auto_config", json.dumps(result, allow_nan=False))
                 self.store.set_meta(db, "auto_configured", "yes")
             if result != previous:
+                if result["mode"] != previous["mode"]:
+                    self.dashboard_cache = None
                 with self.state_lock:
                     self.preview = []
                     if result["mode"] != previous["mode"]:
@@ -495,6 +574,7 @@ class AutoTrader:
             with self.store.connection(write=True) as db:
                 self.store.set_meta(db, "auto_connection_provider", self._provider(config))
             self.broker, self.connection_config = broker, dict(config)
+            self.dashboard_cache = None
             self.broker_ready = True
             with self.state_lock:
                 self.preview = []
@@ -514,6 +594,7 @@ class AutoTrader:
             with self.store.connection(write=True) as db:
                 self.store.set_meta(db, "auto_connection_provider", "none")
             self.broker = self.connection_config = None
+            self.dashboard_cache = None
             self.broker_ready = False
             with self.state_lock:
                 self.account = None
