@@ -1,0 +1,215 @@
+# Personal desk verification — 2026-10-09
+
+Baseline: upstream `53afbbb`. Extension: `personal-kr-paper`.
+
+## Strategy suggestions and Android extension — 2026-10-09
+
+The personal lane now supports four completed-close entry conditions. Existing
+breakout defaults, broker execution selection, exit rules and risk limits remain.
+New strategies can be selected for the local paper ledger only. The development
+adoption record is `STRATEGY_REVIEW.md`; profitability/holdout and original
+screening/LLM compatibility are not claims of this extension.
+
+The suggestion path is saved symbols → public `Market` quotes/history → pure
+`strategies.evaluate` comparison → read-only account/risk observations → visible
+facts/checks/risks/final suggestion → local bounded history. It never calls
+submission, fills, reconciliation, automation start or daily baseline creation.
+Optional chart absence does not hide a confirmed owned-position stop condition;
+buy-only limits do not block exit observations. Stale/source-invalid/missing data
+or execution blockers produce no actionable quantity. Broker quotes and buying
+power still must be revalidated by the existing execution lane.
+
+Pre-deployment verification with bundled Python 3.12:
+
+- 190 offline standard-library tests passed, including same-candidate baseline
+  comparison, new strategy counterexamples/55-bar boundary/today exclusion,
+  legacy configuration preservation, paper fill/deduplication and original exits.
+- Suggestions verify ledger/baseline invariance, source/staleness/unknown handling,
+  owned-stop priority, manual holding isolation, daily/position limits and stopped
+  restart. A strict fake broker verifies unavailable accounts never become paper.
+- Mobile tests verify one-use five-minute codes, attempt limits, 12-hour Secure /
+  HttpOnly / SameSite sessions, logout/revocation, unauthenticated API rejection,
+  Host/Origin/CSRF checks and desktop-only credentials/device management. Both
+  servers bind loopback; the optional mobile port is distinct from the PC port.
+- Headless Edge at 1440/390 pixels passed four-strategy explanation and actual
+  check values, open-detail retention through polling, autonomous suggestion
+  start/stop, strategy persistence, pairing, PNG manifest icons and width checks.
+  Static-only cache was inspected; offline navigation blocked account/order use
+  and a fresh reload restored the screen. The test used synthetic prices and no
+  broker order. JavaScript syntax and diff-format checks passed.
+
+This is an installable web app using private HTTPS proxy access, not a Play Store
+APK. Tailscale Serve configuration, exact-head CI, deployment health and read-only
+public-provider smoke are verified separately. Actual Android device installation,
+off-network device reachability and the first scheduled real broker trading run
+remain unobserved. No real order is used as a deployment test.
+
+This is a separate, manual Korean paper ledger. Upstream screening, strategies,
+BUY/SELL prompts, broker execution, production services and scheduled batches are
+unchanged. Original automated-strategy compatibility and profitability are not
+claims of this extension. No live order or channel message was used to test it.
+
+The input and consumer path is public NAVER JSON/daily bars → `Market` validated
+quotes → local HTTP API → `DeskStore` transactions → Korean desktop/mobile UI.
+Missing prices remain unknown; synthetic demo prices are an explicit separate mode
+and separate database. Optional PRISM reports run through a bounded subprocess
+only after explicit activation and a UI request. Worker alerts are disabled.
+
+Verified locally with Python 3.12:
+
+- 31 standard-library tests passed. Accounting reconciles fees, weighted costs,
+  partial/full sells, cash, realized and unrealized P&L. An interleaved committed
+  order proves cash/holdings/ledger reads use one SQLite snapshot.
+- Eight concurrent requests with one identifier produce one order. Changed
+  economic payload is rejected; repeat requests retain the original memo.
+- Cash and aggregate position limits, unknown held prices, invalid inputs,
+  provider isolation, and persistence after reopening the database passed.
+- HTTP tests exercised account, orders, reports, journal, static files and CSV,
+  including same-origin/CSRF checks and spreadsheet-formula escaping.
+- The optional AI bridge's success/failure/timeout/shutdown paths passed using
+  offline fake workers; actual AI prerequisites were unavailable and paid AI
+  execution remains unverified.
+- Read-only NAVER smoke retrieved six valid default-watchlist quotes and 120
+  Samsung daily bars. Quote basis was 2026-10-08; 2026-10-09 was the observation
+  date. Closed-market snapshots are displayed with their source timestamp.
+- Headless Edge browser smoke at 1440px and 390px passed buy, partial sell,
+  stock search/addition, journal, settings persistence after reload, technical
+  report, daily chart after account refresh and mobile page-width checks.
+  Browser tests used an isolated synthetic account; the personal NAVER account
+  starts at KRW 10,000,000 with no positions or seeded trades.
+
+The built-in computer-control process could not initialize, so browser evidence
+was obtained from the separately launched test browser and inspected locally.
+
+The personal CI workflow runs the offline suite on Windows/Linux and Python
+3.10/3.12. Remote CI status must be checked separately from these local results.
+No original production-server deployment or first scheduled batch was performed.
+
+## Automation extension — 2026-10-09
+
+The personal page now has a separate explicitly activated automation lane. Manual
+desk orders still use the local paper ledger. KIS paper/live automation uses broker
+quotes, orderability, exact order identities and confirmed fills with account
+quantity reconciliation. The original PRISM AI BUY/SELL pipeline is unchanged.
+The strategy adoption record and source-path comparison are in
+`AUTOTRADE_CONTRACT.md` and `AUTOTRADE_REVIEW.md`.
+
+Pre-deployment verification with bundled Python 3.12:
+
+- 78 offline standard-library tests passed, including the original personal suite.
+- New worker/ledger tests cover completed-bar signals, current-price continuation,
+  stale/closed quotes, buy-only daily limits, exits despite exhausted buy limits,
+  manual holding isolation, stop/restart, independent background execution and
+  duplicate servers. Initial daily equity and signal attempts survive restart.
+- 13 broker-controller integration tests use a strict fake broker for accepted,
+  partial, canceled, unknown and filled orders. Ownership is committed only after
+  exact cumulative fill and account quantity checks. Unknown HTTP results survive
+  restart and never submit again; exact user-supplied order IDs require matching
+  account identity. In-flight stop and start/stop races are exercised.
+- 23 KIS transport fixtures verify hosts/TR IDs, token concurrency, pagination,
+  missing/ambiguous balances, no-margin orderability, holiday and actual trade-time
+  proof, and submission-time freshness/09:00–15:20 checks. Authentication and
+  order traffic are injected offline. No external KIS authentication/order was run.
+- Live confirmation binds the saved configuration, strategy, position cap and
+  account namespace. Missing/stale review tokens and non-boolean confirmations
+  are rejected. Same-account locks cover different data directories for one OS user.
+- Windows DPAPI storage round-trip and absence of a plaintext fake secret passed.
+  On Unix the secret file is restricted to 0600. Credentials are excluded from GET,
+  request logs, events and Git. Local databases were backed up before runtime changes.
+- Headless Edge at 1440px and 390px passed the previous manual order/report/journal
+  flows and the new settings persistence, read-only check, local start/stop, blocked
+  unconnected-live start and explicit live review. Broker connection/live start
+  were browser mocks; the server never received them. Stop remained clickable during
+  a delayed read-only check. JavaScript syntax and page width checks passed.
+
+Broker authentication, actual KIS paper/live fills, forward scheduled operation,
+strategy holdout and profitability remain unverified without user credentials.
+Local isolated first worker execution is observed; it is not a KIS scheduled-run
+result. The current personal account will stay stopped on the updated server.
+Exact-head remote CI and post-restart smoke are recorded separately in the delivery.
+
+## Toss execution extension — 2026-10-09
+
+This adds an isolated live domestic LIMIT/DAY adapter and account selection to
+the existing personal policy. Official OAuth, account, integrated market data,
+cash buying power, order and detail contracts were compared with the published
+OpenAPI schema. No Toss paper host, conditional order creation, US execution or
+new strategy trigger is introduced.
+
+Pre-deployment checks with bundled Python 3.12:
+
+- All 140 offline standard-library tests passed in 18.133 seconds. The original
+  desk/KIS tests remain, with 41 Toss transport fixtures, 19 controller boundary
+  cases, one actual-controller/adapter/fake-HTTP execution and restart case, and
+  the protected HTTP account-discovery route.
+- Transport fixtures cover form OAuth, account masking and stable verified
+  identity, mixed KR/US holdings with reconciled currency totals, missing cash,
+  cash-derived sizing with a fee reserve, sellable quantity, complete pages,
+  stale/future/closed/halted quotes, and a final freshness/session check after
+  authentication or throttling. Every broker HTTP call uses an injected opener.
+- The real adapter/controller boundary crosses a durable lowercase buy intent
+  to the API's uppercase BUY, accepted receipt, exact detail/fill and balance
+  proof. Restart restores the same namespace and ownership while remaining
+  stopped; the adapter never reads credentials from upstream configuration.
+- Unknown order results retain the clientOrderId and never resend automatically.
+  Exact opaque IDs, economics, account and attempt time are checked. Terminal
+  REJECTED with a verified partial fill preserves ownership and the planned buy
+  reservation. Empty accounts connect read-only but cannot start trading.
+- Live confirmation includes the current account/configuration plus a separate
+  external-app-order acknowledgement. Provider/environment mixing, stale review,
+  shared-client token conflicts and replacing accounts with owned/pending stock
+  are blocked. int64 account sequences survive browser JSON without rounding.
+- Headless Edge at 1440px and 390px passed account lookup, selection, connection,
+  cleared credential fields, read-only check, KRW basis display, both live
+  confirmations, start and stop through real local HTTP with a fake broker.
+  Revoking confirmation during a delayed status read prevents starting. There
+  were no browser errors, overflow or orders in that isolated UI account.
+- JavaScript syntax and Git whitespace checks passed. Fake broker secrets remain
+  in ignored local test data; no real broker credentials were provided or used.
+
+Toss exposes API-supported order types, so API lists alone do not prove the
+absence of every app order. Sizing/loss controls use known KRW cash buying power
+plus domestic stock value, rather than whole-account NAV. Positive foreign and
+unmanaged holdings still count toward the account position cap. Prices/venue
+scope are KRX/NXT integrated. These limits appear in the connection/start UI.
+
+Actual Toss authentication, allowed-IP setup, fills, scheduled broker execution,
+forward strategy evidence and profitability remain unverified. Exact-head remote
+CI and the preserved public account's post-restart smoke belong to the delivery
+record after deployment.
+
+## Broker dashboard display repair — 2026-10-09
+
+Before this change, `/api/state` always supplied the local paper snapshot for
+dashboard totals even with `toss-live` selected. Connecting while paper mode was
+selected and then switching modes also cleared the automation account cache.
+An offline regression reproduced the missing broker dashboard field before the
+implementation; the connection success flag did not imply a dashboard balance.
+
+- A separate `dashboard_account` reads the selected broker under the existing
+  account/client locks with a 30-second cache and an explicit CSRF-protected
+  refresh route. Local paper data and the manual order endpoint remain separate.
+- The balance read does not run signals, inspect fills, settle intents, place
+  orders, change daily baselines or start automation. Known pending orders do
+  not hide balances; their count is informational and existing trading gates
+  remain unchanged. Identity/environment mismatches and read failures display
+  unavailable balances instead of falling back to paper or unlabelled old data.
+- Dashboard/portfolio default to the selected broker with a display-only local
+  paper switch. Broker balances, domestic holdings, account label and timestamp
+  use the same snapshot. Manual paper orders/history/export appear in the local
+  paper view. Public watchlist/chart data retains its separate source label.
+- Toss keeps its KRW trading-capital label. Missing total/realized profit is
+  shown as broker-unavailable, not derived from local initial capital. Holdings
+  outside the normalized domestic view are counted and disclosed as excluded.
+- All 149 offline tests passed in 27.174 seconds, including eight dashboard
+  regressions and the read-only HTTP refresh/CSRF contract. Cache coalescing,
+  force refresh, account/mode invalidation, empty accounts, missing average cost,
+  failed refresh, wrong identity and unchanged pending ledgers are exercised.
+- Edge at 1440/390 passed distinct fake-broker vs paper totals, holdings and
+  allocation, display switching, one isolated manual paper order, failed lookup
+  without paper fallback, restoration and page-width checks. Broker orders and
+  automatic intents remained zero. JavaScript syntax and whitespace checks pass.
+
+Actual deployment, real broker read-only response and exact-head CI observations
+are recorded in the delivery separately. No real order or scheduled broker run
+is implied by this display repair.
