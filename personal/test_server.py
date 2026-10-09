@@ -21,6 +21,7 @@ class ServerTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
         self.desk.jobs.shutdown()
+        self.desk.autotrade.shutdown()
         self.tmp.cleanup()
 
     def request(self, path, method="GET", data=None, headers=None):
@@ -77,6 +78,20 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("/api/settings", "POST", {"fee_bps": float('nan')})[0], 400)
         self.assertEqual(self.request("/api/orders", "POST", {"symbol": "../../"})[0], 400)
         self.assertEqual(self.request("/api/prism-analysis", "POST", {"symbol": "005930"})[0], 400)
+
+    def test_automation_http_boundaries_and_read_only_check(self):
+        state = self.request("/api/autotrade")[1]
+        self.assertFalse(state["running"])
+        self.assertFalse(state["connection"]["configured"])
+        self.assertEqual(self.request("/api/autotrade/config", "POST", {"interval_seconds": 1})[0], 400)
+        self.assertEqual(self.request("/api/autotrade/config", "POST", {"mode": "kis-live", "symbols": ["005930"]})[0], 200)
+        self.assertEqual(self.request("/api/autotrade/start", "POST", {})[0], 400)
+        self.assertEqual(self.request("/api/autotrade/start", "POST", {"confirm_live": True})[0], 400)
+        self.assertEqual(self.request("/api/autotrade/connect", "POST", {"app_key": "invalid"})[0], 400)
+        self.assertEqual(self.request("/api/autotrade/start", "POST", {}, {"Origin": "https://external.example"})[0], 403)
+        self.assertEqual(self.request("/api/autotrade/config", "POST", {"mode": "paper"})[0], 200)
+        self.assertEqual(self.request("/api/autotrade/check", "POST", {})[0], 200)
+        self.assertFalse(self.request("/api/state")[1]["orders"])
 
 
 if __name__ == "__main__":

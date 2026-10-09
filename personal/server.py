@@ -1,4 +1,4 @@
-"""Local personal desk server. Python standard library only; never places real orders."""
+"""Loopback personal desk; broker automation needs explicit local user activation."""
 import argparse
 import csv
 import io
@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 from .engine import DeskStore
 from .market import Market, technical_report, valid_symbol
 from .prism_bridge import PrismJobs
+from .autotrade import AutoTrader
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
@@ -30,6 +31,7 @@ class Desk:
         self.csrf = secrets.token_urlsafe(32)
         self.jobs = PrismJobs(self.store, enabled=enable_prism)
         self.provider = provider
+        self.autotrade = AutoTrader(self.store, self.market)
 
     def state(self):
         quotes = self.market.quotes(self.store.required_symbols())
@@ -46,6 +48,7 @@ class Desk:
         if any(q.get("status") != "ok" for q in quotes.values()):
             warnings.append("일부 시세를 확인하지 못했습니다. 해당 종목 주문은 차단됩니다.")
         state["warnings"] = list(dict.fromkeys(warnings))
+        state["autotrade"] = self.autotrade.state()
         return state
 
 
@@ -56,6 +59,23 @@ class DeskHTTPServer(ThreadingHTTPServer):
 def make_server(desk, port=8866):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(15)
+
+        def discard_rejected_body(self):
+            # Closing a socket with unread request bytes can reset the response
+            # on Windows. Drain only a small declared body, with a bounded wait.
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if 0 < length <= 65536 and not self.headers.get("Transfer-Encoding"):
+                    self.connection.settimeout(2)
+                    self.rfile.read(length)
+            except (ValueError, OSError):
+                pass
+            finally:
+                self.connection.settimeout(15)
 
         def log_message(self, fmt, *args):
             # No URLs, request bodies or credentials in access logs.
@@ -105,6 +125,8 @@ def make_server(desk, port=8866):
                     self.send_json({"reports": desk.store.reports()})
                 elif url.path == "/api/jobs":
                     self.send_json({"job": desk.jobs.get(query.get("id", [""])[0])})
+                elif url.path == "/api/autotrade":
+                    self.send_json(desk.autotrade.state())
                 elif url.path == "/api/export.csv":
                     orders = desk.store.snapshot(desk.market.quotes(desk.store.required_symbols()))["orders"]
                     output = io.StringIO(newline="")
@@ -134,10 +156,12 @@ def make_server(desk, port=8866):
             origins = (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}")
             if (not self.allowed_host() or (origin and origin not in origins)
                     or not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), desk.csrf)):
+                self.discard_rejected_body()
                 self.send_json({"error": "페이지를 새로고침한 뒤 다시 시도해주세요."}, 403)
                 self.close_connection = True
                 return
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                self.discard_rejected_body()
                 self.send_json({"error": "JSON 요청만 지원합니다."}, 415)
                 self.close_connection = True
                 return
@@ -175,6 +199,20 @@ def make_server(desk, port=8866):
                 elif path == "/api/prism-analysis":
                     quote = desk.market.quote(valid_symbol(payload.get("symbol")))
                     self.send_json({"job": desk.jobs.start(quote["symbol"], quote["name"])}, 202)
+                elif path == "/api/autotrade/config":
+                    self.send_json(desk.autotrade.update_config(payload))
+                elif path == "/api/autotrade/connect":
+                    self.send_json(desk.autotrade.connect(payload))
+                elif path == "/api/autotrade/disconnect":
+                    self.send_json(desk.autotrade.disconnect())
+                elif path == "/api/autotrade/start":
+                    self.send_json(desk.autotrade.start(payload))
+                elif path == "/api/autotrade/stop":
+                    self.send_json(desk.autotrade.stop())
+                elif path == "/api/autotrade/check":
+                    self.send_json(desk.autotrade.check())
+                elif path == "/api/autotrade/reconcile":
+                    self.send_json(desk.autotrade.resolve(payload))
                 else:
                     self.send_json({"error": "찾을 수 없는 주소입니다."}, 404)
             except (ValueError, UnicodeError) as exc:
@@ -187,7 +225,7 @@ def make_server(desk, port=8866):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PRISM 개인 한국 주식 모의매매 데스크")
+    parser = argparse.ArgumentParser(description="PRISM 개인 한국 주식 분석·모의매매·자동매매 데스크")
     parser.add_argument("--provider", choices=("naver", "demo"), default="naver")
     parser.add_argument("--port", type=int, default=8866)
     parser.add_argument("--data-dir", type=Path, default=ROOT / "runtime" / "personal")
@@ -198,7 +236,7 @@ def main():
     args.data_dir.mkdir(parents=True, exist_ok=True)
     desk = Desk(args.data_dir / f"{args.provider}.sqlite", args.provider, args.enable_prism)
     server = make_server(desk, args.port)
-    print(f"PRISM MY DESK · 모의매매 · {args.provider}\nhttp://127.0.0.1:{args.port}\n종료: Ctrl+C", flush=True)
+    print(f"PRISM MY DESK · {args.provider} · 자동매매 기본 중지\nhttp://127.0.0.1:{args.port}\n종료: Ctrl+C", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -206,6 +244,7 @@ def main():
     finally:
         server.server_close()
         desk.jobs.shutdown()
+        desk.autotrade.shutdown()
 
 
 if __name__ == "__main__":

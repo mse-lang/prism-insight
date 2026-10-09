@@ -179,7 +179,7 @@ class DeskStore:
                     "positions": positions, "orders": orders, "journal": journal,
                     "settings": settings, "warnings": warnings}
 
-    def order(self, payload, quotes):
+    def order(self, payload, quotes, *, guard=None):
         code = symbol(payload.get("symbol"))
         side, quantity, key = payload.get("side"), payload.get("quantity"), payload.get("idempotency_key")
         note = payload.get("note", "")
@@ -206,6 +206,12 @@ class DeskStore:
             fee = int((Decimal(gross) * Decimal(str(settings["fee_bps"])) / 10000).to_integral_value(rounding=ROUND_CEILING))
             realized = 0
             name = str(quotes[code].get("name") or code)[:80]
+            if guard is not None:
+                # Automation checks share the ledger's write transaction so a
+                # concurrent manual order cannot bypass its account constraints.
+                guard(db, {"symbol": code, "side": side, "quantity": quantity,
+                           "price": price, "fee": fee, "cash": cash,
+                           "held_quantity": held_qty, "cost_basis": basis})
             if side == "buy":
                 total = gross + fee
                 if total > cash:
