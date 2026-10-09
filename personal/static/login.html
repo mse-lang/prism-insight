@@ -3,18 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#171b31">
+  <meta name="theme-color" content="#f4f7f9">
   <meta name="referrer" content="no-referrer">
   <title>PRISM · 내 기기 연결</title>
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/static/advisor.css">
+  <link rel="stylesheet" href="/static/advisor.css?theme=clear-20261010">
   <script src="/static/login.js" defer></script>
 </head>
 <body class="mobile-login-page">
   <main class="mobile-login">
+    <section class="mobile-login-welcome" aria-labelledby="welcome-title">
+      <p class="welcome-eyebrow">나의 투자 데스크</p>
+      <h2 id="welcome-title">나의 투자 기준을,<br>내 기기에서도.</h2>
+      <p class="welcome-intro">PC의 투자 데스크에 내 기기를 연결하고,<br>자산과 매매 제안의 근거를 함께 살펴보세요.</p>
+      <div class="connect-features">
+        <div class="connect-feature"><span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><div><strong>자산 현황을 한눈에</strong><p>연결된 PC 투자 데스크의 현황을 확인합니다.</p></div></div>
+        <div class="connect-feature"><span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7Z"/></svg></span><div><strong>제안과 판단의 근거를 함께</strong><p>충족한 조건과 다음 확인할 사항을 읽습니다.</p></div></div>
+        <div class="connect-feature"><span class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></span><div><strong>일회용 코드로 내 기기 연결</strong><p>PC에서 발급한 8자리 숫자 코드로 연결합니다.</p></div></div>
+      </div>
+      <p class="welcome-footer">이 기기는 연결된 PC 서버를 사용합니다.<br>PC에서 안내한 연결 주소와 코드를 확인하세요.</p>
+    </section>
     <section class="mobile-login-card" aria-labelledby="login-title">
-      <div class="mobile-login-brand"><img src="/static/icon.svg" alt="" width="43" height="43"><div><strong>PRISM</strong><span>MY DESK</span></div></div>
+      <div class="mobile-login-brand"><img src="/static/icon.svg" alt="" width="43" height="43"><div><strong>PRISM</strong><span>나의 투자 데스크</span></div></div>
+      <div class="connect-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M10 18h4"/></svg>내 기기 연결</div>
       <h1 id="login-title">내 기기 연결</h1>
       <p class="mobile-login-intro">PC의 투자 데스크에서 발급한<br>8자리 연결 코드를 입력하세요.</p>
       <form id="mobile-login-form" autocomplete="off">
