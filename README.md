@@ -1,3 +1,15 @@
+# PRISM MY DESK
+
+Personal Korean stock analysis and paper trading desk, forked from PRISM-INSIGHT.
+
+**[개인 데스크 사용 안내](README_PERSONAL_ko.md)** · Run `python -m personal.server` and open <http://127.0.0.1:8866>.
+
+Watchlists, public quotes, daily charts, local portfolios, trade journals and CSV export work without extra Python packages. `--provider demo` selects explicitly synthetic offline data. Original AI reports are optional and require separate configuration. All orders in the personal desk are simulated.
+
+Original project documentation follows. Original license and attribution are preserved.
+
+---
+
 <div align="center">
   <img src="docs/images/prism-insight-logo.jpeg" alt="PRISM-INSIGHT Logo" width="240">
   &nbsp;&nbsp;
