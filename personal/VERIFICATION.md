@@ -85,3 +85,53 @@ strategy holdout and profitability remain unverified without user credentials.
 Local isolated first worker execution is observed; it is not a KIS scheduled-run
 result. The current personal account will stay stopped on the updated server.
 Exact-head remote CI and post-restart smoke are recorded separately in the delivery.
+
+## Toss execution extension — 2026-10-09
+
+This adds an isolated live domestic LIMIT/DAY adapter and account selection to
+the existing personal policy. Official OAuth, account, integrated market data,
+cash buying power, order and detail contracts were compared with the published
+OpenAPI schema. No Toss paper host, conditional order creation, US execution or
+new strategy trigger is introduced.
+
+Pre-deployment checks with bundled Python 3.12:
+
+- All 140 offline standard-library tests passed in 18.133 seconds. The original
+  desk/KIS tests remain, with 41 Toss transport fixtures, 19 controller boundary
+  cases, one actual-controller/adapter/fake-HTTP execution and restart case, and
+  the protected HTTP account-discovery route.
+- Transport fixtures cover form OAuth, account masking and stable verified
+  identity, mixed KR/US holdings with reconciled currency totals, missing cash,
+  cash-derived sizing with a fee reserve, sellable quantity, complete pages,
+  stale/future/closed/halted quotes, and a final freshness/session check after
+  authentication or throttling. Every broker HTTP call uses an injected opener.
+- The real adapter/controller boundary crosses a durable lowercase buy intent
+  to the API's uppercase BUY, accepted receipt, exact detail/fill and balance
+  proof. Restart restores the same namespace and ownership while remaining
+  stopped; the adapter never reads credentials from upstream configuration.
+- Unknown order results retain the clientOrderId and never resend automatically.
+  Exact opaque IDs, economics, account and attempt time are checked. Terminal
+  REJECTED with a verified partial fill preserves ownership and the planned buy
+  reservation. Empty accounts connect read-only but cannot start trading.
+- Live confirmation includes the current account/configuration plus a separate
+  external-app-order acknowledgement. Provider/environment mixing, stale review,
+  shared-client token conflicts and replacing accounts with owned/pending stock
+  are blocked. int64 account sequences survive browser JSON without rounding.
+- Headless Edge at 1440px and 390px passed account lookup, selection, connection,
+  cleared credential fields, read-only check, KRW basis display, both live
+  confirmations, start and stop through real local HTTP with a fake broker.
+  Revoking confirmation during a delayed status read prevents starting. There
+  were no browser errors, overflow or orders in that isolated UI account.
+- JavaScript syntax and Git whitespace checks passed. Fake broker secrets remain
+  in ignored local test data; no real broker credentials were provided or used.
+
+Toss exposes API-supported order types, so API lists alone do not prove the
+absence of every app order. Sizing/loss controls use known KRW cash buying power
+plus domestic stock value, rather than whole-account NAV. Positive foreign and
+unmanaged holdings still count toward the account position cap. Prices/venue
+scope are KRX/NXT integrated. These limits appear in the connection/start UI.
+
+Actual Toss authentication, allowed-IP setup, fills, scheduled broker execution,
+forward strategy evidence and profitability remain unverified. Exact-head remote
+CI and the preserved public account's post-restart smoke belong to the delivery
+record after deployment.

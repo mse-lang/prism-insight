@@ -1,10 +1,10 @@
 # PRISM MY DESK
 
-Personal Korean stock analysis, paper trading and explicitly activated KIS automation, forked from PRISM-INSIGHT.
+Personal Korean stock analysis, paper trading and explicitly activated KIS/Toss automation, forked from PRISM-INSIGHT.
 
 **[개인 데스크 사용 안내](README_PERSONAL_ko.md)** · Run `python -m personal.server` and open <http://127.0.0.1:8866>.
 
-Watchlists, public quotes, daily charts, local portfolios, trade journals and CSV export work without extra Python packages. `--provider demo` selects explicitly synthetic offline data. Manual desk orders remain simulated. The separate automation page supports local paper, KIS paper and KIS live accounts, with explicit configuration and live activation. It starts stopped after every server restart. Original AI reports are optional and require separate configuration; they do not submit automation orders.
+Watchlists, public quotes, daily charts, local portfolios, trade journals and CSV export work without extra Python packages. `--provider demo` selects explicitly synthetic offline data. Manual desk orders remain simulated. The separate automation page supports local paper, KIS paper/live and Toss live accounts, with explicit configuration and live activation. It starts stopped after every server restart. Toss requires client credentials and an allowed IP, and has no assumed paper environment. Original AI reports are optional and require separate configuration; they do not submit automation orders.
 
 Original project documentation follows. Original license and attribution are preserved.
 

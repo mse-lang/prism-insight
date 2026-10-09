@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -25,7 +26,7 @@ def validate_config(payload, previous=None):
     if not isinstance(payload, dict) or set(payload) - set(DEFAULTS):
         raise ValueError("지원하지 않는 자동매매 설정입니다.")
     result = {**copy.deepcopy(previous or DEFAULTS), **payload}
-    if result["mode"] not in ("paper", "kis-paper", "kis-live"):
+    if result["mode"] not in ("paper", "kis-paper", "kis-live", "toss-live"):
         raise ValueError("자동매매 계좌 종류를 확인해주세요.")
     for key, lower, upper in (("interval_seconds", 30, 3600), ("order_budget", 10000, 100000000),
                              ("max_daily_buy", 10000, 1000000000), ("max_daily_orders", 1, 100),
@@ -182,16 +183,20 @@ class RunLock:
 
 
 class AutoTrader:
-    def __init__(self, store, market, *, broker_factory=None, clock=None):
+    def __init__(self, store, market, *, broker_factory=None, toss_broker_factory=None, clock=None):
         self.store, self.market = store, market
         self.clock = clock or (lambda: datetime.now(KST))
         if broker_factory is None:
             from .kis_broker import KISBroker
             broker_factory = KISBroker
         self.broker_factory = broker_factory
+        self.toss_broker_factory = toss_broker_factory
         self.secrets = SecretFile(store.path.parent / "kis-connection.local")
+        self.toss_secrets = SecretFile(store.path.parent / "toss-connection.local")
         self.run_lock = RunLock(store.path.parent / "personal-autotrade.lock")
         self.broker_run_lock = None
+        self.client_run_lock = None
+        self.client_locks = {}
         self.lock, self.state_lock = threading.RLock(), threading.Lock()
         self.running, self.wake, self.closed = threading.Event(), threading.Event(), threading.Event()
         self.broker = self.connection_config = None
@@ -221,9 +226,12 @@ class AutoTrader:
             if not store.meta(db, "auto_config"):
                 store.set_meta(db, "auto_config", json.dumps(DEFAULTS))
         try:
-            config = self.secrets.load()
+            with store.connection() as db:
+                active_provider = store.meta(db, "auto_connection_provider") or "kis"
+            config = self._secret_file(active_provider).load() if active_provider in ("kis", "toss") else None
             if config:
-                self.broker = self.broker_factory(config)
+                config = {**config, "provider": active_provider}
+                self.broker = self._build_broker(config)
                 self.connection_config = config
         except Exception:
             self._info(message="저장한 연결을 읽지 못했습니다. 인증정보를 다시 연결해주세요.")
@@ -243,6 +251,33 @@ class AutoTrader:
         with self.store.connection() as db:
             return json.loads(self.store.meta(db, "auto_config"))
 
+    @staticmethod
+    def _provider(config):
+        return (config or {}).get("provider", "kis")
+
+    def _secret_file(self, provider):
+        return self.toss_secrets if provider == "toss" else self.secrets
+
+    def _build_broker(self, config):
+        if not isinstance(config, dict) or config.get("provider", "kis") not in ("kis", "toss"):
+            raise ValueError("연결할 증권사를 확인해주세요.")
+        if self._provider(config) == "toss":
+            if config.get("environment") != "live":
+                raise ValueError("토스증권 연결은 실계좌만 지원합니다.")
+            if self.toss_broker_factory is not None:
+                return self.toss_broker_factory(config)
+            from .toss_broker import TossBroker
+            return TossBroker(config)
+        return self.broker_factory(config)
+
+    def _connection_mode(self):
+        if not self.connection_config:
+            return None
+        return self._provider(self.connection_config) + "-" + self.connection_config["environment"]
+
+    def _broker_source(self):
+        return self._provider(self.connection_config)
+
     def _review_token(self, config=None, position_limit_pct=None):
         config = config or self.config()
         value = {"config": config, "policy": POLICY,
@@ -254,8 +289,14 @@ class AutoTrader:
         mode = mode or self.config()["mode"]
         if mode == "paper":
             value = "paper:" + str(self.store.path.resolve())
-        elif self.connection_config:
-            value = ":".join([self.connection_config["environment"], self.connection_config["account_no"], self.connection_config["product_code"]])
+        elif self.connection_config and mode == self._connection_mode():
+            if self._provider(self.connection_config) == "toss":
+                if not self.broker or not self.broker.account_identity:
+                    return "unconnected"
+                value = "toss:live:" + self.broker.account_identity
+            else:
+                # Preserve legacy KIS namespaces and their ownership/baselines.
+                value = ":".join([self.connection_config["environment"], self.connection_config["account_no"], self.connection_config["product_code"]])
         else:
             return "unconnected"
         return hashlib.sha256(value.encode()).hexdigest()[:32]
@@ -269,6 +310,14 @@ class AutoTrader:
             info = copy.deepcopy(self.info)
             account, preview = copy.deepcopy(self.account), copy.deepcopy(self.preview)
         connection = self.connection_config
+        provider = self._provider(connection) if connection else None
+        masked = ""
+        if connection:
+            if provider == "toss":
+                masked = (getattr(self.broker, "account_masked", "") or connection.get("account_masked")
+                          or "계좌 선택 " + str(connection.get("account_seq", "")))
+            else:
+                masked = connection["account_no"][:2] + "****" + connection["account_no"][-2:] + "-" + connection["product_code"]
         if account and account.get("mode") == config["mode"]:
             owned = self._owned(self._namespace(config["mode"]))
             for position in account.get("positions", []):
@@ -290,9 +339,10 @@ class AutoTrader:
                 "configured": configured, "policy": POLICY, "events": events, "orders": orders,
                 "position_limit_pct": position_limit_pct, "review_token": self._review_token(config, position_limit_pct),
                 "preview": preview, "account": account if account and account.get("mode") == config["mode"] else None,
-                "connection": {"configured": bool(connection), "environment": connection["environment"] if connection else None,
-                               "account_masked": connection["account_no"][:2] + "****" + connection["account_no"][-2:] + "-" + connection["product_code"] if connection else "",
-                               "ready": bool(connection and self.broker_ready), "message": "증권사 계좌 조회를 확인했습니다." if connection and self.broker_ready else "한국투자증권 API 연결과 계좌 조회 확인이 필요합니다."}}
+                "connection": {"configured": bool(connection), "provider": provider,
+                               "environment": connection["environment"] if connection else None,
+                               "account_masked": masked,
+                               "ready": bool(connection and self.broker_ready), "message": "증권사 계좌 조회를 확인했습니다." if connection and self.broker_ready else "증권사 API 연결과 계좌 조회 확인이 필요합니다."}}
 
     def _pending(self, db=None):
         sql = "SELECT * FROM auto_intents WHERE status IN ('submitting','pending','partial','uncertain') ORDER BY created_at"
@@ -305,8 +355,12 @@ class AutoTrader:
     def _exclusive(self):
         already_owned = self.run_lock.handle is not None
         self.run_lock.acquire()
-        broker_lock, broker_owned = None, False
+        broker_lock, broker_owned, client_lock, client_owned = None, False, None, False
         try:
+            if self.connection_config and self._provider(self.connection_config) == "toss":
+                client_lock = self._client_lock(self.connection_config)
+                client_owned = client_lock.handle is not None
+                client_lock.acquire()
             if self.config()["mode"] != "paper" and self.connection_config:
                 broker_lock = self._broker_lock()
                 broker_owned = broker_lock.handle is not None
@@ -315,11 +369,13 @@ class AutoTrader:
         finally:
             if broker_lock and not broker_owned:
                 broker_lock.release()
+            if client_lock and not client_owned:
+                client_lock.release()
             if not already_owned:
                 self.run_lock.release()
 
     def _broker_lock(self):
-        namespace = self._namespace("kis-" + self.connection_config["environment"])
+        namespace = self._namespace(self._connection_mode())
         root = Path.home() / ".prism-personal" / "locks"
         root.mkdir(parents=True, exist_ok=True)
         path = root / (namespace + ".lock")
@@ -329,10 +385,37 @@ class AutoTrader:
             self.broker_run_lock = RunLock(path)
         return self.broker_run_lock
 
+    def _client_lock(self, config):
+        identifier = config.get("client_id")
+        if not isinstance(identifier, str) or not identifier:
+            raise ValueError("토스증권 클라이언트 ID를 확인해주세요.")
+        namespace = hashlib.sha256(("toss-client:" + identifier).encode()).hexdigest()
+        root = Path.home() / ".prism-personal" / "locks"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / ("toss-client-" + namespace + ".lock")
+        if self.client_run_lock and self.client_run_lock.path == path:
+            return self.client_run_lock
+        if path not in self.client_locks:
+            self.client_locks[path] = RunLock(path)
+        return self.client_locks[path]
+
+    @contextmanager
+    def _toss_client_lease(self, config):
+        client_lock = self._client_lock(config)
+        owned = client_lock.handle is not None
+        client_lock.acquire()
+        try:
+            yield
+        finally:
+            if not owned:
+                client_lock.release()
+
     def _release_locks(self):
         self.run_lock.release()
         if self.broker_run_lock:
             self.broker_run_lock.release()
+        if self.client_run_lock:
+            self.client_run_lock.release()
 
     def update_config(self, payload):
         with self.lock, self._exclusive():
@@ -354,37 +437,87 @@ class AutoTrader:
             self._event("settings", "자동매매 설정을 저장했습니다.")
             return self.state()
 
+    def toss_accounts(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {"client_id", "client_secret"}:
+            raise ValueError("토스증권 클라이언트 ID와 비밀키를 입력해주세요.")
+        config = {**payload, "provider": "toss", "environment": "live"}
+        with self.lock, self._exclusive():
+            if self.running.is_set() or self._pending():
+                raise ValueError("자동매매를 중지하고 주문 상태를 확인한 뒤 계좌를 조회해주세요.")
+            with self._toss_client_lease(config):
+                if (self.connection_config and self._provider(self.connection_config) == "toss"
+                        and all(self.connection_config.get(key) == config[key] for key in payload)):
+                    broker = self.broker
+                else:
+                    broker = self._build_broker(config)
+                # Preserve int64 accountSeq values across JavaScript JSON parsing.
+                accounts = broker.list_accounts()
+                return {"accounts": [{**row, "account_seq": str(row["account_seq"]) if row["account_seq"] > 2**53 - 1 else row["account_seq"]} for row in accounts]}
+
     def connect(self, config):
+        if not isinstance(config, dict):
+            raise ValueError("증권사 연결 정보를 확인해주세요.")
+        config = {**config, "provider": config.get("provider", "kis")}
+        if self._provider(config) == "toss" and set(config) != {"provider", "environment", "client_id", "client_secret", "account_seq"}:
+            raise ValueError("토스증권 연결 정보 형식을 확인해주세요.")
+        if self._provider(config) == "toss":
+            seq = config.get("account_seq")
+            if isinstance(seq, str) and re.fullmatch(r"[1-9][0-9]{0,18}", seq):
+                seq = int(seq)
+            if type(seq) is not int or not 0 < seq < 2**63:
+                raise ValueError("조회한 토스증권 계좌를 선택해주세요.")
+            config["account_seq"] = seq
         with self.lock, self._exclusive():
             if self.running.is_set() or self._pending():
                 raise ValueError("자동매매를 중지하고 주문 상태를 확인한 뒤 연결해주세요.")
-            broker = self.broker_factory(config)
-            # Broker validates credentials without exposing them in its result/errors.
-            account = broker.account()
-            self._validate_account(account)
             old = self.connection_config
-            if old and self._owned(self._namespace("kis-" + old["environment"])):
-                identity = ("environment", "account_no", "product_code")
-                if any(config.get(key) != old.get(key) for key in identity):
+            old_owned = old and self._owned(self._namespace(self._connection_mode()))
+            if old_owned:
+                identity = ("environment", "account_no", "product_code") if self._provider(old) == "kis" else ("environment", "account_seq", "client_id")
+                if self._provider(config) != self._provider(old) or any(config.get(key) != old.get(key) for key in identity):
                     raise ValueError("자동 보유분이 남은 계좌는 다른 계좌로 바꿀 수 없습니다.")
-            self.secrets.save(config)
+            # Authentication/account reads never submit an order. Toss clients
+            # are leased before auth because a new token revokes their old one.
+            if self._provider(config) == "toss":
+                with self._toss_client_lease(config):
+                    broker = self._build_broker(config)
+                    account = broker.account()
+            else:
+                broker = self._build_broker(config)
+                account = broker.account()
+            self._validate_account(account)
+            if old_owned and broker.account_identity != self.broker.account_identity:
+                raise ValueError("자동 보유분이 남은 실제 계좌와 연결 정보가 다릅니다.")
+            if self._provider(config) == "toss":
+                config.update(verified_account_identity=broker.account_identity,
+                              account_masked=getattr(broker, "account_masked", ""))
+            self._secret_file(self._provider(config)).save(config)
+            with self.store.connection(write=True) as db:
+                self.store.set_meta(db, "auto_connection_provider", self._provider(config))
             self.broker, self.connection_config = broker, dict(config)
             self.broker_ready = True
             with self.state_lock:
-                expected = "kis-" + config["environment"]
+                self.preview = []
+                expected = self._connection_mode()
                 self.account = {**account, "mode": expected} if self.config()["mode"] == expected else None
-            self._event("connected", "한국투자증권 계좌를 읽기 전용으로 확인했습니다. 자동매매는 중지 상태입니다.")
+            name = "토스증권" if self._provider(config) == "toss" else "한국투자증권"
+            self._event("connected", name + " 계좌를 읽기 전용으로 확인했습니다. 자동매매는 중지 상태입니다.")
             return self.state()
 
     def disconnect(self):
         with self.lock, self._exclusive():
-            if self.running.is_set() or self._pending() or self._owned():
+            if (self.running.is_set() or self._pending() or self._owned()
+                    or (self.connection_config and self._owned(self._namespace(self._connection_mode())))):
                 raise ValueError("자동매매 중지 및 주문·자동 보유분 정리 후 연결을 해제해주세요.")
-            self.secrets.delete()
+            if self.connection_config:
+                self._secret_file(self._provider(self.connection_config)).delete()
+            with self.store.connection(write=True) as db:
+                self.store.set_meta(db, "auto_connection_provider", "none")
             self.broker = self.connection_config = None
             self.broker_ready = False
             with self.state_lock:
                 self.account = None
+                self.preview = []
             return self.state()
 
     def _owned(self, namespace=None):
@@ -397,7 +530,7 @@ class AutoTrader:
         if not isinstance(account, dict) or not isinstance(account.get("positions"), list):
             raise ValueError("계좌 잔고를 확인하지 못했습니다.")
         numeric(account.get("cash"), 0, Decimal("1e15"))
-        numeric(account.get("equity"), 1, Decimal("1e15"))
+        numeric(account.get("equity"), 0, Decimal("1e15"))
         seen = set()
         for position in account["positions"]:
             code = symbol(position.get("symbol"))
@@ -407,6 +540,14 @@ class AutoTrader:
             numeric(position.get("price"), 1, Decimal("1e15"))
         if account.get("open_orders"):
             raise ValueError("계좌에 미체결 주문이 있습니다. 증권사에서 먼저 확인해주세요.")
+        if "total_position_count" in account:
+            count = account["total_position_count"]
+            if type(count) is not int or count < sum(p["quantity"] > 0 for p in account["positions"]):
+                raise ValueError("계좌 전체 보유 종목 수를 확인하지 못했습니다.")
+
+    @staticmethod
+    def _position_count(account):
+        return account.get("total_position_count", sum(p["quantity"] > 0 for p in account["positions"]))
 
     def _account(self, config, quotes=None):
         if config["mode"] == "paper":
@@ -414,10 +555,9 @@ class AutoTrader:
             account = self.store.snapshot(quotes)
         else:
             if not self.broker or not self.connection_config:
-                raise ValueError("한국투자증권 계좌를 먼저 연결해주세요.")
-            expected = "live" if config["mode"] == "kis-live" else "paper"
-            if self.connection_config["environment"] != expected:
-                raise ValueError("연결한 API 모의·실계좌 종류와 자동매매 설정이 다릅니다.")
+                raise ValueError("거래할 증권사 계좌를 먼저 연결해주세요.")
+            if self._connection_mode() != config["mode"]:
+                raise ValueError("연결한 증권사·모의·실계좌 종류와 자동매매 설정이 다릅니다.")
             try:
                 account = self.broker.account()
                 self._validate_account(account)
@@ -428,7 +568,7 @@ class AutoTrader:
         self._validate_account(account)
         with self.state_lock:
             # Local paper and broker accounts have separate ledgers and UI labels.
-            self.account = {"mode": config["mode"], **{key: account.get(key) for key in ("cash", "equity", "positions", "as_of")}}
+            self.account = {"mode": config["mode"], **{key: account.get(key) for key in ("cash", "equity", "positions", "as_of", "total_position_count", "equity_basis", "excluded_positions_count", "order_visibility", "venue_scope")}}
         return account
 
     def start(self, payload=None):
@@ -445,17 +585,28 @@ class AutoTrader:
                 saved = self.store.meta(db, "auto_configured") == "yes"
             if config["mode"] != "paper" and not saved:
                 raise ValueError("거래 한도와 대상 종목을 직접 저장한 뒤 시작해주세요.")
-            if config["mode"] == "kis-live" and payload.get("confirm_live") is not True:
+            if config["mode"] in ("kis-live", "toss-live") and payload.get("confirm_live") is not True:
                 raise ValueError("실계좌·전략·주문 한도 확인이 필요합니다.")
-            if config["mode"] == "kis-live" and payload.get("review_token") != self._review_token(config):
+            if config["mode"] == "toss-live" and payload.get("confirm_external_orders") is not True:
+                raise ValueError("토스 앱의 전체 미체결·예약·조건 주문 확인이 필요합니다.")
+            if config["mode"] in ("kis-live", "toss-live") and payload.get("review_token") != self._review_token(config):
                 raise ValueError("계좌·전략·한도가 변경되었거나 확인 정보가 없습니다. 시작 화면을 다시 확인해주세요.")
             self.run_lock.acquire()
             try:
                 if config["mode"] != "paper":
                     if not self.connection_config:
-                        raise ValueError("한국투자증권 계좌를 먼저 연결해주세요.")
+                        raise ValueError("거래할 증권사 계좌를 먼저 연결해주세요.")
+                    if self._connection_mode() != config["mode"]:
+                        raise ValueError("연결한 증권사와 자동매매 설정이 다릅니다.")
+                    if self._provider(self.connection_config) == "toss":
+                        self.client_run_lock = self._client_lock(self.connection_config)
+                        self.client_run_lock.acquire()
                     self._broker_lock().acquire()
                 account = self._account(config)
+                if numeric(account["equity"], 0, Decimal("1e15")) <= 0:
+                    raise ValueError("연결 계좌의 거래 기준 자산이 없어 자동매매를 시작할 수 없습니다.")
+                if config["mode"] in ("kis-live", "toss-live") and payload.get("review_token") != self._review_token(config):
+                    raise ValueError("실제 조회 계좌가 시작 전 확인 정보와 다릅니다. 계좌를 다시 확인해주세요.")
                 with self.store.connection(write=True) as db:
                     self._daily(db, self._namespace(config["mode"]), account, self.clock())
                 self.running.set()
@@ -543,7 +694,7 @@ class AutoTrader:
             current = db.execute("SELECT * FROM auto_intents WHERE id=?", (intent["id"],)).fetchone()
         if not current or current["status"] in ("filled", "canceled", "rejected"):
             return
-        if quantity < current["filled_quantity"] or (status == "rejected" and quantity):
+        if quantity < current["filled_quantity"] or (status == "rejected" and quantity and intent["mode"] != "toss-live"):
             raise ValueError("체결 수량이 이전 확인보다 줄었거나 거절 상태와 맞지 않습니다.")
         if quantity and ((intent["side"] == "buy" and price > intent["price"]) or (intent["side"] == "sell" and price < intent["price"])):
             raise ValueError("지정가 조건과 체결 가격이 달라 정산을 보류합니다.")
@@ -566,7 +717,7 @@ class AutoTrader:
         if actual != expected or expected < 0:
             raise ValueError("체결 내역과 계좌 보유 수량이 달라 정산을 보류합니다.")
         with self.state_lock:
-            self.account = {"mode": intent["mode"], **{key: account.get(key) for key in ("cash", "equity", "positions", "as_of")}}
+            self.account = {"mode": intent["mode"], **{key: account.get(key) for key in ("cash", "equity", "positions", "as_of", "total_position_count", "equity_basis", "excluded_positions_count", "order_visibility", "venue_scope")}}
         with self.store.connection(write=True) as db:
             current = db.execute("SELECT * FROM auto_intents WHERE id=?", (intent["id"],)).fetchone()
             if current["status"] in ("filled", "canceled", "rejected"):
@@ -597,7 +748,8 @@ class AutoTrader:
             baseline = account["equity"]
             self.store.set_meta(db, key, baseline)
         rows = db.execute("SELECT * FROM auto_intents WHERE namespace=? AND substr(created_at,1,10)=?", (namespace, day)).fetchall()
-        buys = sum(row["planned_amount"] for row in rows if row["side"] == "buy" and row["status"] != "rejected")
+        buys = sum(row["planned_amount"] for row in rows if row["side"] == "buy"
+                   and (row["status"] != "rejected" or row["filled_quantity"] > 0))
         return {"orders": sum(row["side"] == "buy" for row in rows), "buys": buys, "baseline": float(baseline)}
 
     def _reserve(self, config, account, code, side, quantity, price, signal_date, at, *, decision=None, quote=None):
@@ -616,8 +768,13 @@ class AutoTrader:
             if db.execute("SELECT 1 FROM auto_intents WHERE namespace=? AND signal_date=? AND symbol=? AND side=?", (namespace, signal_date, code, side)).fetchone():
                 raise ValueError("같은 확정 신호로 이미 주문을 시도했습니다.")
             before = next((row["quantity"] for row in account["positions"] if row["symbol"] == code), 0)
+            metadata = {"pre_order_quantity": before, "limit_price": price}
+            if config["mode"] == "toss-live":
+                metadata.update({"client_order_id": identifier, "symbol": code, "side": side, "quantity": quantity,
+                                 "order_date": at.strftime("%Y%m%d"), "attempt_at": at.isoformat(), "account_identity": self.broker.account_identity,
+                                 "environment": "live"})
             db.execute("INSERT INTO auto_intents(id,namespace,mode,signal_date,symbol,side,quantity,price,planned_amount,status,broker,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (identifier, namespace, config["mode"], signal_date, code, side, quantity, price, planned, "submitting", json.dumps({"pre_order_quantity": before}), at.isoformat(), now()))
+                       (identifier, namespace, config["mode"], signal_date, code, side, quantity, price, planned, "submitting", json.dumps(metadata), at.isoformat(), now()))
             evidence = {"signal": decision, "quote": {key: (quote or {}).get(key) for key in ("source", "as_of", "retrieved_at", "timestamp_basis", "market_status", "price")}}
             limits = {"automation": config, "account": {"cash": account["cash"], "equity": account["equity"]},
                       "daily": daily, "ledger": self.store.settings()}
@@ -630,7 +787,7 @@ class AutoTrader:
         self._info(last_run=at.isoformat())
         self._reconcile()
         if self._pending():
-            self._info(status="blocked", message="미체결·부분체결·불확실 주문이 남아 새 주문을 중단했습니다. 한국투자 앱에서 확인 후 다시 점검해주세요.")
+            self._info(status="blocked", message="미체결·부분체결·불확실 주문이 남아 새 주문을 중단했습니다. 연결 증권사에서 확인 후 다시 점검해주세요.")
             return
         account = self._account(config)
         with self.store.connection(write=True) as db:
@@ -655,7 +812,7 @@ class AutoTrader:
                     source = self.market.provider
                 else:
                     quote = self.broker.quote(code)
-                    source = "kis"
+                    source = self._broker_source()
                 tradable_quote(quote, source, self.clock())
                 own = owned.get(code)
                 stop_hit = bool(own and quote["price"] <= own["cost_basis"] / own["quantity"] * (1 - config["stop_loss_pct"] / 100))
@@ -682,7 +839,7 @@ class AutoTrader:
                     if price <= decision["breakout_level"] or price <= decision["ma20"]:
                         raise ValueError("현재 시세에서 돌파·상승 추세가 유지되지 않아 매수를 보류합니다.")
                     side, reason = "buy", "확정 종가가 앞선 20일 최고 종가를 돌파했습니다."
-                    if len(held) >= config["max_positions"]:
+                    if self._position_count(account) >= config["max_positions"]:
                         raise ValueError("계좌의 최대 보유 종목 수 한도입니다.")
                     budget = min(config["order_budget"], account["cash"])
                     # Reserve 1% within the configured budget, then the ledger
@@ -723,14 +880,14 @@ class AutoTrader:
         # cached quote or with the prior daily close as the order price.
         code = quote["symbol"]
         fresh = self.market.quote(code, fresh=True) if config["mode"] == "paper" else self.broker.quote(code)
-        tradable_quote(fresh, self.market.provider if config["mode"] == "paper" else "kis", self.clock())
+        tradable_quote(fresh, self.market.provider if config["mode"] == "paper" else self._broker_source(), self.clock())
         price = fresh["price"]
         if price != quote["price"]:
             raise ValueError("점검 중 시세가 바뀌어 이번 주문을 보류합니다.")
         account = self._account(config)
         held = {row["symbol"]: row for row in account["positions"] if row["quantity"]}
         cap = account["equity"] * self.store.settings()["max_position_pct"] / 100
-        if side == "buy" and (code in held or len(held) >= config["max_positions"] or price * quantity * 1.01 > min(config["order_budget"], account["cash"]) or price * quantity > cap * 0.99):
+        if side == "buy" and (code in held or self._position_count(account) >= config["max_positions"] or price * quantity * 1.01 > min(config["order_budget"], account["cash"]) or price * quantity > cap * 0.99):
             raise ValueError("계좌·현금 한도가 바뀌어 매수를 보류합니다.")
         if side == "buy" and config["mode"] != "paper":
             power = self.broker.buying_power(code, limit_price=price)
@@ -738,7 +895,7 @@ class AutoTrader:
                 raise ValueError("증권사 매수 가능 금액·수량이 바뀌어 매수를 보류합니다.")
         if side == "sell" and (code not in held or quantity > held[code]["quantity"]):
             raise ValueError("확인된 보유 수량이 부족해 매도를 보류합니다.")
-        tradable_quote(fresh, self.market.provider if config["mode"] == "paper" else "kis", self.clock())
+        tradable_quote(fresh, self.market.provider if config["mode"] == "paper" else self._broker_source(), self.clock())
         if not self.running.is_set():
             return
         signal_date = at.date().isoformat() if side == "sell" else decision["signal_date"]
@@ -777,13 +934,18 @@ class AutoTrader:
                 if not self.running.is_set():
                     self._status(intent["id"], "rejected")
                     return
-                receipt = self.broker.submit(code, side, quantity, limit_price=price)
+                if config["mode"] == "toss-live":
+                    receipt = self.broker.submit(code, side, quantity, limit_price=price, client_order_id=intent["id"])
+                else:
+                    receipt = self.broker.submit(code, side, quantity, limit_price=price)
                 before = next((row["quantity"] for row in account["positions"] if row["symbol"] == code), 0)
-                self._status(intent["id"], "pending", {**receipt, "symbol": code, "side": side, "quantity": quantity, "pre_order_quantity": before})
+                self._status(intent["id"], "pending", {**receipt, "symbol": code, "side": side, "quantity": quantity,
+                                                    "pre_order_quantity": before, "limit_price": price,
+                                                    **({"client_order_id": intent["id"], "attempt_at": at.isoformat()} if config["mode"] == "toss-live" else {})})
                 self._event("accepted", f"{code} 지정가 주문 접수. 체결 확인 대기 중입니다.", code)
-            except OrderRejected:
+            except OrderRejected as exc:
                 self._status(intent["id"], "rejected")
-                self._event("rejected", f"{code} 증권사가 주문을 거절했습니다.", code)
+                self._event("rejected", f"{code} 주문 거절 · {str(exc)[:250]}", code)
             except Exception:
                 self._status(intent["id"], "uncertain")
                 self.running.clear()
@@ -804,6 +966,10 @@ class AutoTrader:
             receipt = {**json.loads(row["broker"] or "{}"), "broker_order_id": str(payload.get("broker_order_id", "")), "organization_id": str(payload.get("organization_id", "")),
                        "order_date": str(payload.get("order_date", "")), "symbol": row["symbol"], "side": row["side"], "quantity": row["quantity"],
                        "account_identity": self.broker.account_identity, "environment": self.broker.environment}
+            if row["mode"] == "toss-live":
+                if receipt.get("order_date") != datetime.fromisoformat(row["created_at"]).astimezone(KST).strftime("%Y%m%d"):
+                    raise ValueError("저장된 주문 시도 일자와 확인 일자가 다릅니다.")
+                receipt.update(client_order_id=row["id"], limit_price=row["price"], attempt_at=row["created_at"])
             fill = self.broker.fills(receipt)
             self._status(intent["id"], "pending", receipt)
             self._settle(intent, fill)

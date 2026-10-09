@@ -203,6 +203,8 @@ def make_server(desk, port=8866):
                     self.send_json(desk.autotrade.update_config(payload))
                 elif path == "/api/autotrade/connect":
                     self.send_json(desk.autotrade.connect(payload))
+                elif path == "/api/autotrade/toss/accounts":
+                    self.send_json(desk.autotrade.toss_accounts(payload))
                 elif path == "/api/autotrade/disconnect":
                     self.send_json(desk.autotrade.disconnect())
                 elif path == "/api/autotrade/start":

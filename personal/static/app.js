@@ -26,7 +26,10 @@
   let liveReviewKey = "";
   let globalMessage = "";
   let globalSourceWarning = false;
-  const autoModeNames = { paper: "로컬 모의매매", "kis-paper": "한국투자 모의투자", "kis-live": "실계좌 · 실제 주문" };
+  const autoModeNames = { paper: "로컬 모의매매", "kis-paper": "한국투자 모의투자", "kis-live": "한국투자 실계좌 · 실제 주문", "toss-live": "토스 실계좌 · 실제 주문" };
+  let tossAccounts = [];
+  let tossCredentialsVersion = 0;
+  let tossAccountsVersion = -1;
   const autoFields = { interval_seconds: "auto-interval", order_budget: "auto-budget", max_daily_buy: "auto-daily-buy", max_daily_orders: "auto-max-orders", max_positions: "auto-max-positions", stop_loss_pct: "auto-stop-loss", daily_loss_pct: "auto-daily-loss" };
 
   function node(tag, className, value) {
@@ -632,7 +635,7 @@
     const mode = autotrade?.mode || "paper";
     const badge = $("header-mode");
     badge.replaceChildren(node("span", "status-dot"), document.createTextNode(autoView ? autoModeNames[mode] || "계좌 확인 필요" : "모의매매"));
-    badge.classList.toggle("live-header", autoView && mode === "kis-live");
+    badge.classList.toggle("live-header", autoView && isLiveMode(mode));
     $("footer-message").textContent = autoView ? "자동매매 계좌와 실행 상태를 확인하세요. 분석과 전략은 수익을 보장하지 않습니다." : "분석은 판단을 돕는 참고 자료입니다. 이 화면의 수동 주문은 모의매매로 기록됩니다.";
   }
   function scheduleAutoPoll() {
@@ -657,6 +660,7 @@
     if (!autoConfigInitialized) {
       populateAutoConfig();
       $("broker-environment").value = autotrade.connection?.environment || "paper";
+      $("broker-provider").value = autotrade.connection?.provider || "kis";
       autoConfigInitialized = true;
     } else if (!autoConfigDirty && previousConfig !== JSON.stringify(autotrade.config)) {
       populateAutoConfig();
@@ -674,7 +678,63 @@
   }
   function updateAutoModeHelp() {
     const mode = $("auto-mode").value;
-    $("auto-mode-help").textContent = mode === "kis-live" ? "실전투자 앱 키와 실계좌를 연결해야 합니다. 시작 전 저장된 계좌와 한도를 다시 확인합니다." : mode === "kis-paper" ? "한국투자증권 모의투자 앱 키와 모의 계좌가 필요합니다. 증권사의 모의 주문으로 접수합니다." : "이 앱의 로컬 모의 계좌에서 주문을 기록합니다. 한국투자증권 주문을 보내지 않습니다.";
+    $("auto-mode-help").textContent = mode === "toss-live" ? "토스증권 API 키와 허용 IP를 설정하고 조회한 실계좌를 선택하세요. 시작 전 저장된 계좌와 한도를 다시 확인합니다." : mode === "kis-live" ? "한국투자 실전투자 앱 키와 실계좌를 연결해야 합니다. 시작 전 저장된 계좌와 한도를 다시 확인합니다." : mode === "kis-paper" ? "한국투자증권 모의투자 앱 키와 모의 계좌가 필요합니다. 증권사의 모의 주문으로 접수합니다." : "이 앱의 로컬 모의 계좌에서 주문을 기록합니다. 증권사 주문을 보내지 않습니다.";
+  }
+  function isLiveMode(mode) { return mode === "kis-live" || mode === "toss-live"; }
+  function expectedBroker(mode) { return mode === "toss-live" ? "toss" : "kis"; }
+  function connectionMatches(mode, connection) {
+    return (connection.provider || "kis") === expectedBroker(mode) && connection.environment === (isLiveMode(mode) ? "live" : "paper");
+  }
+  function updateBrokerForm() {
+    const provider = $("broker-provider").value;
+    const locked = Boolean(autotrade?.running || unresolvedOrders().length || autoOperating || autoStopping);
+    $("broker-kis-fields").classList.toggle("hidden", provider !== "kis");
+    $("broker-toss-fields").classList.toggle("hidden", provider !== "toss");
+    $("broker-kis-fields").querySelectorAll("input, select, button").forEach((element) => element.disabled = locked || provider !== "kis");
+    $("broker-toss-fields").querySelectorAll("input, select, button").forEach((element) => element.disabled = locked || provider !== "toss");
+    const accountsValid = tossAccountsVersion === tossCredentialsVersion && tossAccounts.length > 0;
+    $("toss-account-seq").disabled = locked || provider !== "toss" || !accountsValid;
+    $("toss-accounts-button").disabled = locked || provider !== "toss" || !$("toss-client-id").value.trim() || !$("toss-client-secret").value.trim();
+    $("broker-connect-button").disabled = locked || (provider === "toss" && (!accountsValid || !$("toss-account-seq").value));
+  }
+  function clearTossAccounts(message) {
+    tossAccounts = [];
+    tossAccountsVersion = -1;
+    const option = node("option", "", "계좌 목록을 먼저 조회하세요.");
+    option.value = "";
+    $("toss-account-seq").replaceChildren(option);
+    $("toss-accounts-message").textContent = message || "계좌 목록 조회는 읽기 전용이며 키를 저장하거나 주문하지 않습니다.";
+    updateBrokerForm();
+  }
+  async function lookupTossAccounts() {
+    if (autoOperating || autoStopping || autotrade?.running || unresolvedOrders().length) return;
+    const client_id = $("toss-client-id").value.trim();
+    const client_secret = $("toss-client-secret").value.trim();
+    if (!client_id || !client_secret) { autoAlert("토스증권 Client ID와 Client Secret을 입력하세요."); return; }
+    const version = tossCredentialsVersion;
+    autoOperating = true;
+    renderAutoControls();
+    autoAlert("");
+    $("toss-accounts-message").textContent = "연결 가능한 계좌를 읽기 전용으로 조회하고 있습니다.";
+    try {
+      const response = await api("/api/autotrade/toss/accounts", { client_id, client_secret });
+      if (version !== tossCredentialsVersion) { clearTossAccounts("입력한 키가 변경되었습니다. 계좌 목록을 다시 조회하세요."); return; }
+      tossAccounts = (response.accounts || []).filter((account) => {
+        const seq = account.account_seq;
+        return (Number.isSafeInteger(seq) && seq > 0) || (typeof seq === "string" && /^[1-9][0-9]{0,18}$/.test(seq) && BigInt(seq) < 9223372036854775808n);
+      }).map((account) => ({ ...account, account_seq: String(account.account_seq) }));
+      tossAccountsVersion = version;
+      const placeholder = node("option", "", tossAccounts.length ? "연결할 계좌를 선택하세요." : "연결 가능한 계좌가 없습니다.");
+      placeholder.value = "";
+      const options = tossAccounts.map((account) => {
+        const option = node("option", "", (account.account_masked || "마스킹 계좌 정보 없음") + (account.account_type === "BROKERAGE" ? " · 주식 계좌" : ""));
+        option.value = String(account.account_seq);
+        return option;
+      });
+      $("toss-account-seq").replaceChildren(placeholder, ...options);
+      $("toss-accounts-message").textContent = tossAccounts.length ? tossAccounts.length + "개 계좌를 조회했습니다. 연결할 계좌를 선택하세요. 키 저장과 주문은 진행하지 않았습니다." : "연결 가능한 계좌가 없습니다. 계좌와 API 권한을 확인하세요.";
+    } catch (error) { clearTossAccounts("계좌를 조회하지 못했습니다. 입력한 키와 허용 IP를 확인하세요."); autoAlert(error.message); }
+    finally { autoOperating = false; renderAutoControls(); scheduleAutoPoll(); }
   }
   function unresolvedOrders() { return (autotrade?.orders || []).filter((order) => ["submitting", "pending", "partial", "uncertain"].includes(order.status)); }
   function renderAutoControls() {
@@ -684,7 +744,7 @@
     const connection = autotrade.connection || {};
     const mode = autotrade.mode || "paper";
     const brokerMode = mode !== "paper";
-    const matched = connection.environment === (mode === "kis-live" ? "live" : "paper");
+    const matched = connectionMatches(mode, connection);
     const ready = !brokerMode || Boolean(connection.ready && matched);
     const canStart = !running && !autoConfigDirty && Boolean(autotrade.configured) && ready && !pending.length;
     const busyState = autoOperating || autoStopping;
@@ -699,12 +759,13 @@
     $("auto-config-form").querySelectorAll("input, select, textarea, button").forEach((element) => element.disabled = running || pending.length > 0 || busyState);
     $("broker-connect-form").querySelectorAll("input, select, button").forEach((element) => element.disabled = running || pending.length > 0 || busyState);
     $("broker-disconnect-button").disabled = !connection.configured || running || pending.length > 0 || busyState;
+    updateBrokerForm();
     let help;
     if (running) help = "자동매매가 실행 중입니다. 정지하면 새 주문 제출을 중단합니다.";
-    else if (pending.length) help = "미체결 또는 불확실 주문 " + pending.length + "건이 있습니다. 한국투자 앱에서 주문을 확인·취소한 뒤 ‘신호·주문 상태 확인’을 눌러주세요.";
+    else if (pending.length) help = "미체결 또는 불확실 주문 " + pending.length + "건이 있습니다. 연결된 증권사 앱에서 주문을 확인·취소한 뒤 ‘신호·주문 상태 확인’을 눌러주세요.";
     else if (autoConfigDirty || !autotrade.configured) help = "거래 방식과 예산·한도를 저장한 뒤 시작하세요.";
-    else if (!ready) help = "저장된 거래 방식과 일치하는 한국투자 계좌를 연결하고 읽기 전용 조회를 확인하세요.";
-    else help = mode === "kis-live" ? "실계좌 연결과 저장된 한도를 확인했습니다. 시작 시 실제 주문을 다시 확인합니다." : "저장된 설정으로 자동매매를 시작할 수 있습니다.";
+    else if (!ready) help = "저장된 거래 방식과 같은 증권사·환경의 계좌를 연결하고 읽기 전용 조회를 확인하세요.";
+    else help = isLiveMode(mode) ? "실계좌 연결과 저장된 한도를 확인했습니다. 시작 시 실제 주문을 다시 확인합니다." : "저장된 설정으로 자동매매를 시작할 수 있습니다.";
     $("auto-start-help").textContent = help;
   }
   function renderAutotrade() {
@@ -714,7 +775,7 @@
     const pending = unresolvedOrders();
     ["auto-mode-heading", "auto-control-mode", "auto-account-mode"].forEach((id) => {
       $(id).textContent = autoModeNames[mode] || "계좌 확인 필요";
-      $(id).classList.toggle("live-badge", mode === "kis-live");
+      $(id).classList.toggle("live-badge", isLiveMode(mode));
     });
     $("auto-status-title").textContent = running ? "자동매매 실행 중" : pending.length ? "정지됨 · 주문 확인 필요" : "자동매매 정지됨";
     $("auto-status-dot").classList.toggle("running", running);
@@ -724,8 +785,8 @@
     $("auto-next-run").textContent = running && autotrade.next_run ? dateTime(autotrade.next_run, true) : "—";
     const connection = autotrade.connection || {};
     $("broker-connection-badge").textContent = connection.ready ? "조회 확인" : connection.configured ? "저장됨 · 조회 필요" : "미연결";
-    $("broker-account").textContent = connection.configured ? (connection.environment === "live" ? "실전투자 · " : "모의투자 · ") + (connection.account_masked || "계좌 확인 필요") : "연결된 계좌 없음";
-    $("broker-message").textContent = connection.message || "모의투자와 실전투자의 앱 키는 서로 다릅니다.";
+    $("broker-account").textContent = connection.configured ? (connection.provider === "toss" ? "토스증권 · " : "한국투자 · ") + (connection.environment === "live" ? "실전투자 · " : "모의투자 · ") + (connection.account_masked || "계좌 확인 필요") : "연결된 계좌 없음";
+    $("broker-message").textContent = connection.message || "연결할 증권사와 거래 환경을 선택하세요.";
     renderAutoControls();
     renderAutoAccount();
     renderAutoPreview();
@@ -747,6 +808,10 @@
     const account = cached && cached.mode === mode ? cached : mode === "paper" ? state : null;
     $("auto-account-cash").textContent = won(account?.cash);
     $("auto-account-equity").textContent = won(account?.equity);
+    const tossBasis = mode === "toss-live" || account?.equity_basis === "krw-trading-capital";
+    $("auto-account-equity-label").textContent = tossBasis ? "원화 거래 기준 자산" : "총 평가자산";
+    $("auto-account-basis").textContent = tossBasis ? "토스의 비중·일일 손실 한도는 원화 현금 매수 가능액과 국내 보유 주식 평가액을 기준으로 계산합니다. 해외 주식은 거래하지 않으며 계좌 전체 보유 종목 수 한도에는 포함합니다." : "보유 현황은 최근 읽기 전용 조회 결과입니다.";
+    if (tossBasis && hasNumber(account?.excluded_positions_count) && account.excluded_positions_count > 0) $("auto-account-basis").textContent += " 다른 시장의 보유 " + account.excluded_positions_count + "종목은 자동매매 관리에서 제외됩니다.";
     const fragment = document.createDocumentFragment();
     (account?.positions || []).forEach((position) => {
       const row = node("tr");
@@ -773,12 +838,13 @@
     const labels = { submitting: "접수 확인 중", pending: "접수 · 미체결", partial: "부분 체결", filled: "체결 확인", uncertain: "응답 불확실", canceled: "취소 확인", rejected: "거절" };
     const fragment = document.createDocumentFragment();
     (autotrade.orders || []).forEach((order) => {
+      const statusLabel = order.status === "rejected" && number(order.filled_quantity) > 0 ? "일부 체결 후 거절" : labels[order.status] || "상태 확인 필요";
       const row = node("tr");
       const symbolCell = node("td");
       symbolCell.append(node("strong", "", order.symbol), node("span", "symbol", order.broker_order_id ? "증권사 " + order.broker_order_id : "앱 " + String(order.id).slice(0, 8)));
       const sideCell = node("td");
       sideCell.append(node("span", "side-badge" + (order.side === "sell" ? " sell" : ""), order.side === "sell" ? "매도" : "매수"));
-      row.append(symbolCell, node("td", "", autoModeNames[order.mode] || order.mode), sideCell, node("td", "number", wonFormat.format(number(order.quantity)) + "주"), node("td", "number", won(order.price)), node("td", "auto-order-status " + (["uncertain", "submitting"].includes(order.status) ? "attention-text" : ""), labels[order.status] || "상태 확인 필요"), node("td", "number", hasNumber(order.filled_quantity) ? wonFormat.format(number(order.filled_quantity)) + "주" + (number(order.filled_quantity) > 0 && hasNumber(order.average_price) ? " · " + won(order.average_price) : "") : "확인 불가"), node("td", "", dateTime(order.created_at, true)));
+      row.append(symbolCell, node("td", "", autoModeNames[order.mode] || order.mode), sideCell, node("td", "number", wonFormat.format(number(order.quantity)) + "주"), node("td", "number", won(order.price)), node("td", "auto-order-status " + (["uncertain", "submitting"].includes(order.status) ? "attention-text" : ""), statusLabel), node("td", "number", hasNumber(order.filled_quantity) ? wonFormat.format(number(order.filled_quantity)) + "주" + (number(order.filled_quantity) > 0 && hasNumber(order.average_price) ? " · " + won(order.average_price) : "") : "확인 불가"), node("td", "", dateTime(order.created_at, true)));
       fragment.append(row);
     });
     if (!(autotrade.orders || []).length) fragment.append(emptyRow(8, "자동매매 주문 기록이 없습니다."));
@@ -808,6 +874,14 @@
     $("reconcile-intent").replaceChildren(...options);
     if (uncertain.some((order) => order.id === saved)) $("reconcile-intent").value = saved;
     $("auto-reconcile-panel").classList.toggle("hidden", !uncertain.length);
+    updateReconciliationProvider();
+  }
+  function updateReconciliationProvider() {
+    const order = (autotrade?.orders || []).find((item) => item.id === $("reconcile-intent").value);
+    const toss = order?.mode === "toss-live";
+    $("reconcile-organization-field").classList.toggle("hidden", toss);
+    $("reconcile-organization").disabled = toss;
+    $("reconcile-organization").required = !toss;
   }
   async function autoAction(path, payload) {
     if (autoOperating || autoStopping) return false;
@@ -830,34 +904,40 @@
     } catch (error) { autoAlert(error.message); }
     finally { autoStopping = false; renderAutoControls(); scheduleAutoPoll(); }
   }
-  function liveKey() { return JSON.stringify({ config: autotrade?.config, account: autotrade?.connection?.account_masked, environment: autotrade?.connection?.environment, review: autotrade?.review_token }); }
+  function liveKey() { return JSON.stringify({ config: autotrade?.config, account: autotrade?.connection?.account_masked, provider: autotrade?.connection?.provider || "kis", environment: autotrade?.connection?.environment, review: autotrade?.review_token }); }
   function reviewAutoStart() {
     if (!autotrade || $("auto-start-button").disabled) return;
-    if (autotrade.mode !== "kis-live") {
+    if (!isLiveMode(autotrade.mode)) {
       autoAction("/api/autotrade/start", { confirm_live: false }).then((ok) => { if (ok) showToast("자동매매를 시작했습니다."); });
       return;
     }
     const config = autotrade.config;
     liveReviewKey = liveKey();
     const details = document.createDocumentFragment();
-    [["연결 실계좌", autotrade.connection.account_masked || "확인 불가"], ["자동매매 전략", "확정 종가 20일 돌파 · MA20 이탈 또는 설정 손절"], ["종목당 최대 자산 비중", percent(autotrade.position_limit_pct, false)], ["주문당 매수 예산", won(config.order_budget)], ["일일 최대 매수금액", won(config.max_daily_buy)], ["일일 최대 매수 주문", number(config.max_daily_orders) + "건"], ["계좌 전체 보유 한도", number(config.max_positions) + "종목"], ["종목별 손절 기준", percent(config.stop_loss_pct, false)], ["일일 손실 한도", percent(config.daily_loss_pct, false)], ["대상 종목", (config.symbols || []).join(", ")]].forEach(([label, value]) => {
+    [["연결 증권사", autotrade.mode === "toss-live" ? "토스증권 실계좌" : "한국투자증권 실계좌"], ["연결 실계좌", autotrade.connection.account_masked || "확인 불가"], ["자산·손실 한도 기준", autotrade.mode === "toss-live" ? "원화 현금 매수 가능액 + 국내 주식 평가액" : "계좌 평가자산"], ["자동매매 전략", "확정 종가 20일 돌파 · MA20 이탈 또는 설정 손절"], ["종목당 최대 자산 비중", percent(autotrade.position_limit_pct, false)], ["주문당 매수 예산", won(config.order_budget)], ["일일 최대 매수금액", won(config.max_daily_buy)], ["일일 최대 매수 주문", number(config.max_daily_orders) + "건"], ["계좌 전체 보유 한도", number(config.max_positions) + "종목"], ["종목별 손절 기준", percent(config.stop_loss_pct, false)], ["일일 손실 한도", percent(config.daily_loss_pct, false)], ["대상 종목", (config.symbols || []).join(", ")]].forEach(([label, value]) => {
       const row = node("div");
       row.append(node("span", "", label), node("strong", "", value));
       details.append(row);
     });
     $("live-confirm-details").replaceChildren(details);
     $("live-confirm-checkbox").checked = false;
+    $("toss-external-orders-checkbox").checked = false;
+    $("toss-external-confirm").classList.toggle("hidden", autotrade.mode !== "toss-live");
+    $("live-broker-limits").classList.toggle("hidden", autotrade.mode !== "toss-live");
     $("live-confirm-button").disabled = true;
     $("live-confirm-error").classList.add("hidden");
     $("live-dialog").showModal();
   }
   async function confirmLiveStart() {
-    if (!$("live-confirm-checkbox").checked || autoOperating) return;
+    if (!$("live-confirm-checkbox").checked || (autotrade?.mode === "toss-live" && !$("toss-external-orders-checkbox").checked) || autoOperating || autoStopping) return;
     await busy($("live-confirm-button"), async () => {
       try {
         setAutotrade(await api("/api/autotrade"));
-        if (liveReviewKey !== liveKey() || autotrade.running || !autotrade.connection?.ready || autotrade.connection.environment !== "live" || unresolvedOrders().length || autoConfigDirty) throw new Error("계좌·설정 또는 실행 상태가 변경되었습니다. 창을 닫고 현재 상태를 다시 확인하세요.");
-        const ok = await autoAction("/api/autotrade/start", { confirm_live: true, review_token: autotrade.review_token });
+        if (liveReviewKey !== liveKey() || !isLiveMode(autotrade.mode) || autotrade.running || !autotrade.connection?.ready || !connectionMatches(autotrade.mode, autotrade.connection) || unresolvedOrders().length || autoConfigDirty) throw new Error("계좌·설정 또는 실행 상태가 변경되었습니다. 창을 닫고 현재 상태를 다시 확인하세요.");
+        if (!$("live-dialog").open || !$("live-confirm-checkbox").checked || (autotrade?.mode === "toss-live" && !$("toss-external-orders-checkbox").checked)) throw new Error("현재 계좌와 한도 및 외부 주문 확인에 동의한 뒤 시작하세요.");
+        const payload = { confirm_live: true, review_token: autotrade.review_token };
+        if (autotrade.mode === "toss-live") payload.confirm_external_orders = $("toss-external-orders-checkbox").checked;
+        const ok = await autoAction("/api/autotrade/start", payload);
         if (ok) { $("live-dialog").close(); showToast("실계좌 자동매매를 시작했습니다. 실행 기록을 확인하세요."); }
         else throw new Error($("auto-alert").textContent || "시작 요청을 확인하지 못했습니다.");
       } catch (error) {
@@ -865,6 +945,7 @@
         $("live-confirm-error").classList.remove("hidden");
       }
     });
+    updateLiveConfirmation();
   }
 
   document.querySelectorAll("[data-side]").forEach((button) => button.addEventListener("click", () => { side = button.dataset.side; updateOrder(); }));
@@ -923,26 +1004,50 @@
   });
   $("broker-connect-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const payload = { app_key: $("broker-app-key").value.trim(), app_secret: $("broker-app-secret").value.trim(), account_no: $("broker-account-no").value.trim(), product_code: $("broker-product-code").value.trim(), environment: $("broker-environment").value };
-    if (!/^\d{8}$/.test(payload.account_no) || !/^\d{2}$/.test(payload.product_code)) { autoAlert("계좌번호 앞 8자리와 상품코드 2자리를 확인하세요."); return; }
+    const provider = $("broker-provider").value;
+    let payload;
+    if (provider === "toss") {
+      const account_seq = $("toss-account-seq").value;
+      if (tossAccountsVersion !== tossCredentialsVersion || !tossAccounts.some((account) => account.account_seq === account_seq)) { autoAlert("현재 입력한 키로 계좌를 조회한 뒤 연결할 계좌를 선택하세요."); return; }
+      payload = { provider: "toss", environment: "live", client_id: $("toss-client-id").value.trim(), client_secret: $("toss-client-secret").value.trim(), account_seq };
+    } else {
+      payload = { provider: "kis", app_key: $("broker-app-key").value.trim(), app_secret: $("broker-app-secret").value.trim(), account_no: $("broker-account-no").value.trim(), product_code: $("broker-product-code").value.trim(), environment: $("broker-environment").value };
+      if (!/^\d{8}$/.test(payload.account_no) || !/^\d{2}$/.test(payload.product_code)) { autoAlert("계좌번호 앞 8자리와 상품코드 2자리를 확인하세요."); return; }
+    }
     if (await autoAction("/api/autotrade/connect", payload)) {
-      $("broker-app-key").value = "";
-      $("broker-app-secret").value = "";
-      $("broker-account-no").value = "";
+      if (provider === "toss") {
+        $("toss-client-id").value = "";
+        $("toss-client-secret").value = "";
+        tossCredentialsVersion++;
+        clearTossAccounts("토스 계좌 연결을 저장했습니다. 키 입력은 화면에서 비웠습니다.");
+      } else {
+        $("broker-app-key").value = "";
+        $("broker-app-secret").value = "";
+        $("broker-account-no").value = "";
+      }
       showToast("계좌 잔고를 읽기 전용으로 확인했습니다. 주문하지 않았습니다.");
     }
   });
-  $("broker-disconnect-button").addEventListener("click", async () => { if (await autoAction("/api/autotrade/disconnect", {})) showToast("저장된 한국투자 연결 정보를 제거했습니다."); });
+  $("broker-provider").addEventListener("change", updateBrokerForm);
+  ["toss-client-id", "toss-client-secret"].forEach((id) => $(id).addEventListener("input", () => { tossCredentialsVersion++; clearTossAccounts("현재 입력한 키로 계좌 목록을 조회하세요. 키가 바뀌면 이전 계좌 선택은 사용하지 않습니다."); }));
+  $("toss-accounts-button").addEventListener("click", lookupTossAccounts);
+  $("toss-account-seq").addEventListener("change", updateBrokerForm);
+  $("broker-disconnect-button").addEventListener("click", async () => { if (await autoAction("/api/autotrade/disconnect", {})) showToast("저장된 증권사 연결 정보를 제거했습니다."); });
   $("auto-start-button").addEventListener("click", reviewAutoStart);
   $("auto-stop-button").addEventListener("click", stopAutotrade);
   $("auto-check-button").addEventListener("click", async () => { if (await autoAction("/api/autotrade/check", {})) showToast("신호와 주문 상태를 읽기 전용으로 확인했습니다. 새 주문은 보내지 않았습니다."); });
-  $("live-confirm-checkbox").addEventListener("change", () => $("live-confirm-button").disabled = !$("live-confirm-checkbox").checked);
+  function updateLiveConfirmation() { $("live-confirm-button").disabled = !$("live-confirm-checkbox").checked || (autotrade?.mode === "toss-live" && !$("toss-external-orders-checkbox").checked); }
+  $("live-confirm-checkbox").addEventListener("change", updateLiveConfirmation);
+  $("toss-external-orders-checkbox").addEventListener("change", updateLiveConfirmation);
   $("live-confirm-button").addEventListener("click", confirmLiveStart);
   $("auto-reconcile-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const payload = { intent_id: $("reconcile-intent").value, broker_order_id: $("reconcile-order-id").value.trim(), organization_id: $("reconcile-organization").value.trim(), order_date: $("reconcile-date").value.trim() };
+    const payload = { intent_id: $("reconcile-intent").value, broker_order_id: $("reconcile-order-id").value.trim(), order_date: $("reconcile-date").value.trim() };
+    const order = (autotrade?.orders || []).find((item) => item.id === payload.intent_id);
+    if (order?.mode !== "toss-live") payload.organization_id = $("reconcile-organization").value.trim();
     if (await autoAction("/api/autotrade/reconcile", payload)) { showToast("해당 증권사 주문의 상태를 확인했습니다. 체결 기록을 확인하세요."); $("reconcile-order-id").value = ""; $("reconcile-organization").value = ""; }
   });
+  $("reconcile-intent").addEventListener("change", updateReconciliationProvider);
   window.addEventListener("hashchange", renderView);
   window.addEventListener("beforeunload", () => { clearTimeout(jobTimer); clearTimeout(searchTimer); clearTimeout(autoPollTimer); });
   $("today").textContent = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).format(new Date());

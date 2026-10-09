@@ -3,6 +3,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from personal.server import Desk, make_server
 
@@ -92,6 +93,19 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("/api/autotrade/config", "POST", {"mode": "paper"})[0], 200)
         self.assertEqual(self.request("/api/autotrade/check", "POST", {})[0], 200)
         self.assertFalse(self.request("/api/state")[1]["orders"])
+
+    def test_toss_account_lookup_is_csrf_protected_post_without_orders(self):
+        payload = {"client_id": "offline-client", "client_secret": "offline-secret"}
+        accounts = {"accounts": [{"account_seq": 1, "account_masked": "12*******01", "account_type": "BROKERAGE"}]}
+        with patch.object(self.desk.autotrade, "toss_accounts", return_value=accounts) as lookup:
+            self.assertEqual(self.request("/api/autotrade/toss/accounts", "POST", payload,
+                                          {"X-CSRF-Token": ""})[0], 403)
+            lookup.assert_not_called()
+            self.assertEqual(self.request("/api/autotrade/toss/accounts")[0], 404)
+            self.assertEqual(self.request("/api/autotrade/toss/accounts", "POST", payload), (200, accounts))
+            lookup.assert_called_once_with(payload)
+        self.assertFalse(self.request("/api/state")[1]["orders"])
+        self.assertFalse(self.request("/api/autotrade")[1]["connection"]["configured"])
 
 
 if __name__ == "__main__":
