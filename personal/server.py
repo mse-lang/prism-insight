@@ -13,6 +13,8 @@ from .engine import DeskStore
 from .market import Market, technical_report, valid_symbol
 from .prism_bridge import PrismJobs
 from .autotrade import AutoTrader
+from .advisor import Advisor
+from .mobile import MobileAccess
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
@@ -22,6 +24,19 @@ STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                 "/static/app.css": ("app.css", "text/css; charset=utf-8"),
                 "/static/app.js": ("app.js", "text/javascript; charset=utf-8")}
+STATIC_FILES.update({
+    "/static/advisor.js": ("advisor.js", "text/javascript; charset=utf-8"),
+    "/static/advisor.css": ("advisor.css", "text/css; charset=utf-8"),
+    "/static/desk-mobile.css": ("desk-mobile.css", "text/css; charset=utf-8"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/static/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/static/icon-192.png": ("icon-192.png", "image/png"),
+    "/static/icon-512.png": ("icon-512.png", "image/png"),
+    "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
+    "/static/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
+    "/login": ("login.html", "text/html; charset=utf-8"),
+    "/static/login.js": ("login.js", "text/javascript; charset=utf-8"),
+})
 
 
 class Desk:
@@ -32,6 +47,8 @@ class Desk:
         self.jobs = PrismJobs(self.store, enabled=enable_prism)
         self.provider = provider
         self.autotrade = AutoTrader(self.store, self.market)
+        self.advisor = Advisor(self.autotrade)
+        self.mobile = MobileAccess()
 
     def state(self, *, refresh_account=False):
         quotes = self.market.quotes(self.store.required_symbols())
@@ -50,6 +67,7 @@ class Desk:
         state["warnings"] = list(dict.fromkeys(warnings))
         state["dashboard_account"] = self.autotrade.dashboard_snapshot(refresh=refresh_account)
         state["autotrade"] = self.autotrade.state()
+        state["mobile"] = self.mobile.state()
         return state
 
 
@@ -57,7 +75,9 @@ class DeskHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def make_server(desk, port=8866):
+def make_server(desk, port=8866, *, mobile=False):
+    if mobile and not desk.mobile.origin:
+        raise ValueError("모바일 HTTPS 주소를 지정해주세요.")
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -90,6 +110,10 @@ def make_server(desk, port=8866):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Service-Worker-Allowed", "/")
+            if getattr(self, "response_cookie", None):
+                self.send_header("Set-Cookie", self.response_cookie)
+                self.response_cookie = None
             self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
             self.end_headers()
 
@@ -100,7 +124,13 @@ def make_server(desk, port=8866):
 
         def allowed_host(self):
             actual_port = self.server.server_port
-            return self.headers.get("Host") in (f"127.0.0.1:{actual_port}", f"localhost:{actual_port}")
+            hosts = [f"127.0.0.1:{actual_port}", f"localhost:{actual_port}"]
+            if mobile:
+                hosts.append(urlsplit(desk.mobile.origin).netloc)
+            return self.headers.get("Host") in hosts
+
+        def mobile_authorized(self):
+            return not mobile or desk.mobile.authenticated(self.headers.get("Cookie"))
 
         def do_GET(self):
             if not self.allowed_host():
@@ -109,8 +139,13 @@ def make_server(desk, port=8866):
             url = urlsplit(self.path)
             query = parse_qs(url.query)
             try:
+                if mobile and not self.mobile_authorized() and url.path not in STATIC_FILES:
+                    self.send_json({"error": "기기 연결이 필요합니다.", "code": "AUTH_REQUIRED"}, 401)
+                    return
                 if url.path in STATIC_FILES:
                     file, mime = STATIC_FILES[url.path]
+                    if mobile and not self.mobile_authorized() and url.path in ("/", "/index.html"):
+                        file = "login.html"
                     data = (STATIC / file).read_bytes()
                     self.send_headers(200, mime, len(data))
                     self.wfile.write(data)
@@ -128,6 +163,10 @@ def make_server(desk, port=8866):
                     self.send_json({"job": desk.jobs.get(query.get("id", [""])[0])})
                 elif url.path == "/api/autotrade":
                     self.send_json(desk.autotrade.state())
+                elif url.path == "/api/advisor":
+                    self.send_json(desk.advisor.state())
+                elif url.path == "/api/mobile":
+                    self.send_json(desk.mobile.state())
                 elif url.path == "/api/export.csv":
                     orders = desk.store.snapshot(desk.market.quotes(desk.store.required_symbols()))["orders"]
                     output = io.StringIO(newline="")
@@ -154,7 +193,38 @@ def make_server(desk, port=8866):
 
         def do_POST(self):
             origin = self.headers.get("Origin")
-            origins = (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}")
+            path = urlsplit(self.path).path
+            origins = (desk.mobile.origin,) if mobile else (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}")
+            if mobile and path == "/api/mobile/login":
+                if not self.allowed_host() or origin != desk.mobile.origin:
+                    self.discard_rejected_body()
+                    self.send_json({"error": "모바일 HTTPS 주소로 연결해주세요."}, 403)
+                    self.close_connection = True
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding") or self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                        raise ValueError("연결 코드 형식을 확인해주세요.")
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"code"}:
+                        raise ValueError("연결 코드 형식을 확인해주세요.")
+                    token = desk.mobile.login(payload)
+                    self.response_cookie = desk.mobile.cookie(token)
+                    self.send_json({"ok": True})
+                except (ValueError, UnicodeError):
+                    self.send_json({"error": "연결 코드가 맞지 않거나 만료됐습니다. PC에서 새 코드를 발급해주세요."}, 400)
+                    self.close_connection = True
+                return
+            if mobile and not self.mobile_authorized():
+                self.discard_rejected_body()
+                self.send_json({"error": "기기 연결이 필요합니다.", "code": "AUTH_REQUIRED"}, 401)
+                self.close_connection = True
+                return
+            if mobile and (origin != desk.mobile.origin or path in ("/api/mobile/pair", "/api/mobile/revoke", "/api/autotrade/connect", "/api/autotrade/toss/accounts", "/api/autotrade/disconnect")):
+                self.discard_rejected_body()
+                self.send_json({"error": "증권사 인증정보와 기기 연결은 PC에서 관리해주세요."}, 403)
+                self.close_connection = True
+                return
             if (not self.allowed_host() or (origin and origin not in origins)
                     or not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), desk.csrf)):
                 self.discard_rejected_body()
@@ -204,6 +274,22 @@ def make_server(desk, port=8866):
                     if payload:
                         raise ValueError("계좌 새로고침에는 추가 입력이 필요하지 않습니다.")
                     self.send_json(desk.state(refresh_account=True))
+                elif path == "/api/advisor/refresh":
+                    self.send_json(desk.advisor.request(payload), 202)
+                elif path == "/api/advisor/config":
+                    self.send_json(desk.advisor.configure(payload))
+                elif path == "/api/mobile/pair":
+                    if payload:
+                        raise ValueError("기기 연결에는 추가 입력이 필요하지 않습니다.")
+                    self.send_json(desk.mobile.pair())
+                elif path == "/api/mobile/revoke":
+                    if payload:
+                        raise ValueError("기기 해제에는 추가 입력이 필요하지 않습니다.")
+                    self.send_json(desk.mobile.revoke())
+                elif path == "/api/mobile/logout":
+                    desk.mobile.logout(self.headers.get("Cookie"))
+                    self.response_cookie = desk.mobile.cookie("", clear=True)
+                    self.send_json({"ok": True})
                 elif path == "/api/autotrade/config":
                     self.send_json(desk.autotrade.update_config(payload))
                 elif path == "/api/autotrade/connect":
@@ -237,12 +323,20 @@ def main():
     parser.add_argument("--port", type=int, default=8866)
     parser.add_argument("--data-dir", type=Path, default=ROOT / "runtime" / "personal")
     parser.add_argument("--enable-prism", action="store_true", help="원본 AI 분석을 요청할 수 있게 허용합니다. 별도 API 설정이 필요합니다.")
+    parser.add_argument("--mobile-origin", help="비공개 HTTPS 프록시 주소. 예: https://my-pc.example.ts.net")
+    parser.add_argument("--mobile-port", type=int, default=8868)
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error("포트는 1024~65535 범위로 지정해주세요.")
+    if args.mobile_origin and (not 1024 <= args.mobile_port <= 65535 or args.mobile_port == args.port):
+        parser.error("모바일 포트는 PC 포트와 다른 1024~65535 포트로 지정해주세요.")
     args.data_dir.mkdir(parents=True, exist_ok=True)
     desk = Desk(args.data_dir / f"{args.provider}.sqlite", args.provider, args.enable_prism)
+    desk.mobile = MobileAccess(args.mobile_origin)
     server = make_server(desk, args.port)
+    mobile_server = make_server(desk, args.mobile_port, mobile=True) if args.mobile_origin else None
+    if mobile_server:
+        threading.Thread(target=mobile_server.serve_forever, daemon=True, name="personal-mobile").start()
     print(f"PRISM MY DESK · {args.provider} · 자동매매 기본 중지\nhttp://127.0.0.1:{args.port}\n종료: Ctrl+C", flush=True)
     try:
         server.serve_forever()
@@ -250,6 +344,10 @@ def main():
         pass
     finally:
         server.server_close()
+        if mobile_server:
+            mobile_server.shutdown()
+            mobile_server.server_close()
+        desk.advisor.shutdown()
         desk.jobs.shutdown()
         desk.autotrade.shutdown()
 

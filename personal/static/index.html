@@ -7,7 +7,12 @@
   <meta name="theme-color" content="#171a31">
   <title>PRISM · 나의 투자 데스크</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/advisor.css">
+  <link rel="stylesheet" href="/static/desk-mobile.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <script src="/static/app.js" defer></script>
+  <script src="/static/advisor.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -22,6 +27,7 @@
       <a class="nav-link" href="#portfolio" data-view="portfolio"><span class="nav-icon" aria-hidden="true">▧</span>포트폴리오</a>
       <a class="nav-link" href="#journal" data-view="journal"><span class="nav-icon" aria-hidden="true">▤</span>거래일지</a>
       <a class="nav-link" href="#autotrade" data-view="autotrade"><span class="nav-icon" aria-hidden="true">⇄</span>자동매매</a>
+      <a class="nav-link" href="#advisor" data-view="advisor"><span class="nav-icon" aria-hidden="true">◎</span>매매 제안</a>
       <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span>설정</a>
     </nav>
     <div class="sidebar-note"><span class="status-dot"></span><strong>모의매매 계좌</strong><p>아이디어를 기록하고,<br>나의 투자 원칙을 만드세요.</p></div>
@@ -57,6 +63,13 @@
       <section id="view-journal" class="view hidden"><div class="page-heading"><div><p class="eyebrow">BUILD YOUR OWN CONVICTION</p><h1>거래일지</h1><p class="subtitle">숫자 뒤의 판단을 기록하세요. 좋은 원칙은 기록에서 시작됩니다.</p></div><span class="mini-badge purple">나의 투자 기록</span></div><div class="journal-layout"><section class="panel journal-compose"><div class="panel-heading"><h2>새 기록 남기기</h2><span aria-hidden="true">✎</span></div><form id="journal-form"><label class="field-label" for="journal-symbol">종목</label><select class="text-input" id="journal-symbol"><option value="">전체 시장 / 일반 메모</option></select><label class="field-label" for="journal-text">나의 관찰과 판단</label><textarea class="text-input" id="journal-text" rows="8" maxlength="5000" placeholder="매수·매도 이유, 확인하고 싶은 가설, 다음에 돌아볼 점을 남겨보세요." required></textarea><button class="button primary wide" type="submit">일지 저장 <span aria-hidden="true">→</span></button></form><p class="muted">기록은 이 컴퓨터의 개인 계좌에 저장됩니다.</p></section><div id="journal-list" class="journal-list"></div></div></section>
 
       <section id="view-settings" class="view hidden"><div class="page-heading"><div><p class="eyebrow">MAKE THIS DESK YOURS</p><h1>설정</h1><p class="subtitle">나의 데스크 환경과 자금 관리 기준을 설정하세요.</p></div></div><div class="settings-layout"><section class="panel settings-panel"><div class="panel-heading"><h2>개인 투자 환경</h2><span class="mini-badge purple">자금 관리 기준</span></div><form id="settings-form"><label class="field-label" for="settings-name">데스크 이름</label><input class="text-input" id="settings-name" maxlength="60" required placeholder="나의 투자 데스크"><label class="field-label" for="settings-limit">종목당 최대 자산 비중</label><div class="quantity-input"><input id="settings-limit" type="number" min="1" max="100" step="1" required><span>%</span></div><p class="field-help">수동 모의매수와 자동매매의 신규 매수 모두에 적용되는 비중 한도입니다.</p><label class="field-label" for="settings-fee">모의거래 수수료</label><div class="quantity-input"><input id="settings-fee" type="number" min="0" max="100" step="0.1" required><span>bps</span></div><p class="field-help">1 bps = 0.01%. 로컬 모의매수와 모의매도에 각각 적용됩니다. 증권사 수수료는 계좌의 실제 조건을 따릅니다.</p><button class="button primary" type="submit">변경사항 저장</button></form></section><div class="settings-side"><section class="panel"><p class="eyebrow small">DATA CONNECTION</p><h2>시세 연결</h2><div class="connection-status"><span class="status-dot"></span><strong id="settings-provider">—</strong></div><p id="provider-help" class="muted"></p><p class="field-help">시세 공급자를 바꾸려면 실행 중인 앱을 종료한 후 다시 시작하세요.</p><div class="command-card"><span>공개 시세 연결</span><code>python -m personal.server --provider naver</code></div><div class="command-card"><span>합성 데모 시세</span><code>python -m personal.server --provider demo</code></div></section><section class="panel"><p class="eyebrow small">ACCOUNT DETAILS</p><h2>로컬 모의 계좌 정보</h2><div class="account-details"><div><span>초기 모의자금</span><strong id="settings-initial">—</strong></div><div><span>수동 주문 방식</span><strong>로컬 모의 주문</strong></div><div><span>통화</span><strong>대한민국 원 · KRW</strong></div></div><p class="field-help">대시보드에서 연결 계좌와 로컬 모의계좌를 전환해 볼 수 있습니다. 증권사 연결과 자동매매 설정은 자동매매 화면에서 관리합니다.</p></section></div></div></section>
+      <section id="view-advisor" class="view hidden">
+        <div class="page-heading"><div><p class="eyebrow">EVIDENCE BEFORE ACTION</p><h1>매매 제안</h1><p class="subtitle">확인한 사실과 조건으로 판단 과정을 살펴보세요.</p></div><span class="mini-badge purple">규칙 기반 · 주문 없음</span></div>
+        <section class="panel advisor-toolbar"><div><h2>나의 전략 연구실</h2><p id="advisor-status" aria-live="polite">제안 상태를 확인하고 있습니다.</p><p class="field-help">관측 종목을 네 가지 전략으로 비교합니다. 자율 제안은 서버에서 1분마다 계산하며 자동매매와 별도로 동작합니다.</p></div><div class="advisor-actions"><button id="advisor-refresh" class="button secondary" type="button">지금 제안 계산</button><button id="advisor-toggle" class="button primary" type="button">자율 제안 시작</button></div></section>
+        <div id="advisor-items" class="advisor-items advisor-grid" aria-live="polite"></div>
+        <section class="panel advisor-history-panel"><div class="panel-heading"><h2>제안 기록</h2><span class="muted">최근 20회 · 판단 당시 자료</span></div><div id="advisor-history" class="advisor-history-list"></div></section>
+        <section class="panel mobile-setup-panel"><div class="panel-heading"><h2>안드로이드에서 사용</h2><button id="install-app" class="button secondary" type="button">홈 화면에 설치</button></div><div class="mobile-setup-content"><p id="mobile-status">모바일 연결 상태를 확인하고 있습니다.</p><a id="mobile-url" class="text-button" rel="noreferrer" target="_blank"></a><ol><li>휴대폰에 Tailscale을 설치하고 PC와 같은 계정으로 연결합니다.</li><li>위 보안 주소를 Android Chrome에서 엽니다.</li><li>PC에서 연결 코드를 발급하고 휴대폰에 입력합니다.</li><li>Chrome 메뉴에서 ‘앱 설치’ 또는 ‘홈 화면에 추가’를 선택합니다.</li></ol><div id="mobile-pc-controls"><button id="mobile-pair" class="button primary" type="button">휴대폰 연결 코드 발급</button><button id="mobile-revoke" class="button secondary" type="button">연결된 기기 모두 해제</button><p id="mobile-code" class="pairing-code" aria-live="polite"></p></div><button id="mobile-logout" class="button secondary hidden" type="button">이 기기 연결 해제</button><p class="field-help">PC 서버가 켜져 있어야 사용할 수 있습니다. 오프라인에서는 계좌 상태를 확인하거나 주문을 보낼 수 없습니다.</p></div></section>
+      </section>
       <section id="view-autotrade" class="view hidden">
         <div class="page-heading"><div><p class="eyebrow">A DISCIPLINED TRADING ROUTINE</p><h1>자동매매</h1><p class="subtitle">연결 계좌와 주문 한도를 확인하고, 직접 시작하세요.</p></div><span class="mini-badge" id="auto-mode-heading">로컬 모의매매</span></div>
         <div id="auto-alert" class="alert hidden" role="alert"></div>
@@ -64,6 +77,7 @@
         <div class="auto-layout">
           <section class="panel auto-config-panel"><div class="panel-heading"><div><p class="eyebrow small">ORDER LIMITS & UNIVERSE</p><h2>자동매매 설정</h2></div><span class="muted" id="auto-config-saved">저장된 설정</span></div>
             <form id="auto-config-form">
+              <label class="field-label" for="auto-strategy">매매 전략</label><select class="text-input" id="auto-strategy" name="strategy"><option value="breakout20">20일 종가 돌파 · 기존</option><option value="trend_pullback">추세 눌림 반등 · 모의 비교</option><option value="ma_recovery">평균선 회복 · 모의 비교</option><option value="consensus">조건 합의 · 모의 비교</option></select><p id="auto-strategy-help" class="field-help">기존 돌파는 유지합니다. 새 전략은 로컬 모의매매에서 선택하고, 매매 제안에서 같은 자료로 비교할 수 있습니다.</p>
               <label class="field-label" for="auto-mode">거래 방식</label><select class="text-input" id="auto-mode" name="mode"><option value="paper">로컬 모의매매 · 실제 주문 없음</option><option value="kis-paper">한국투자증권 모의투자 계좌</option><option value="kis-live">한국투자증권 실계좌 · 실제 주문</option><option value="toss-live">토스증권 실계좌 · 실제 주문</option></select><p class="field-help" id="auto-mode-help">로컬 모의 계좌에서 주문을 기록합니다.</p>
               <label class="field-label" for="auto-symbols">관측 종목</label><textarea class="text-input" id="auto-symbols" name="symbols" rows="2" placeholder="005930, 000660, 035420" required></textarea><p class="field-help">6자리 종목 코드를 쉼표나 줄바꿈으로 구분하세요. 등록한 종목만 관측합니다.</p>
               <div class="auto-fields-grid">
@@ -76,7 +90,7 @@
                 <div><label class="field-label" for="auto-interval">조건 확인 간격</label><div class="quantity-input"><input id="auto-interval" name="interval_seconds" type="number" min="30" max="3600" step="1" required><span>초</span></div></div>
               </div><p class="field-help">주문당 예산에는 수수료 여유 1%를 확보합니다. 일일 금액·주문 수·손실 한도는 신규 매수를 제한하며, 자동 보유분의 매도는 계속 확인합니다. 실행 중 또는 미확정 주문이 있으면 설정을 변경할 수 없습니다.</p><button class="button primary" type="submit" id="auto-save-button">자동매매 설정 저장</button>
             </form>
-            <div class="strategy-note"><p class="eyebrow small">FIXED STRATEGY</p><h3>확정 일봉 기반 추세 관측</h3><ul><li>오늘 진행 중인 봉을 제외하고, 마지막 확정 일봉의 20일 고점 돌파를 매수 조건으로 확인합니다.</li><li>20일 이동평균 이탈 또는 설정한 손절 기준에서 매도를 확인합니다.</li><li>연결된 증권사에는 새로 확인한 현재가로 지정가 주문을 접수합니다. 접수 후 미체결될 수 있습니다.</li><li>정해진 익절 상한 없이 자동매매가 매수한 종목만 관리합니다. 기존 수동 보유 종목은 청산하지 않습니다.</li></ul><p class="field-help">로컬 모의 주문은 확인한 가격으로 즉시 체결됩니다. 전략이나 수익률을 보장하지 않습니다.</p></div>
+            <div class="strategy-note"><p class="eyebrow small">ENTRY STRATEGY & COMMON EXITS</p><h3>진입 전략과 공통 청산</h3><ul><li>선택 전략의 확정 일봉 조건과 현재 시세 유지를 함께 확인합니다. 새 전략은 로컬 모의매매에서 비교합니다.</li><li>20일 이동평균 이탈 또는 설정한 손절 기준에서 매도를 확인합니다.</li><li>연결된 증권사에는 새로 확인한 현재가로 지정가 주문을 접수합니다. 접수 후 미체결될 수 있습니다.</li><li>정해진 익절 상한 없이 자동매매가 매수한 종목만 관리합니다. 기존 수동 보유 종목은 청산하지 않습니다.</li></ul><p class="field-help">로컬 모의 주문은 확인한 가격으로 즉시 체결됩니다. 전략이나 수익률을 보장하지 않습니다.</p></div>
           </section>
           <div class="auto-side">
             <section class="panel broker-panel"><div class="panel-heading"><div><p class="eyebrow small">BROKER CONNECTION</p><h2>증권사 연결</h2></div><span id="broker-connection-badge" class="mini-badge">미연결</span></div><div class="broker-connection-info"><strong id="broker-account">연결된 계좌 없음</strong><p id="broker-message" class="field-help">연결할 증권사와 거래 환경을 선택하세요.</p></div>

@@ -15,19 +15,29 @@ from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 
 from .engine import KST, now, numeric, symbol
+from .strategies import catalog, evaluate
 
 POLICY = "personal-breakout-20-v1"
 DEFAULTS = {"mode": "paper", "interval_seconds": 60, "order_budget": 1000000,
             "max_daily_buy": 3000000, "max_daily_orders": 10, "max_positions": 3,
-            "stop_loss_pct": 5, "daily_loss_pct": 2, "symbols": ["005930", "000660", "035420"]}
+            "stop_loss_pct": 5, "daily_loss_pct": 2, "symbols": ["005930", "000660", "035420"], "strategy": "breakout20"}
+
+
+def policy_for(config):
+    strategy = config.get("strategy", "breakout20")
+    return POLICY if strategy == "breakout20" else "personal-" + strategy + "-v1"
 
 
 def validate_config(payload, previous=None):
     if not isinstance(payload, dict) or set(payload) - set(DEFAULTS):
         raise ValueError("지원하지 않는 자동매매 설정입니다.")
-    result = {**copy.deepcopy(previous or DEFAULTS), **payload}
+    result = {**copy.deepcopy(DEFAULTS), **copy.deepcopy(previous or {}), **payload}
     if result["mode"] not in ("paper", "kis-paper", "kis-live", "toss-live"):
         raise ValueError("자동매매 계좌 종류를 확인해주세요.")
+    if result["strategy"] not in {row["id"] for row in catalog()}:
+        raise ValueError("지원하는 매매 전략을 선택해주세요.")
+    if result["strategy"] != "breakout20" and result["mode"] != "paper":
+        raise ValueError("새 전략은 로컬 모의매매에서 먼저 비교해주세요. 증권사 주문은 기존 돌파 전략을 사용합니다.")
     for key, lower, upper in (("interval_seconds", 30, 3600), ("order_budget", 10000, 100000000),
                              ("max_daily_buy", 10000, 1000000000), ("max_daily_orders", 1, 100),
                              ("max_positions", 1, 20)):
@@ -250,7 +260,7 @@ class AutoTrader:
 
     def config(self):
         with self.store.connection() as db:
-            return json.loads(self.store.meta(db, "auto_config"))
+            return {**copy.deepcopy(DEFAULTS), **json.loads(self.store.meta(db, "auto_config"))}
 
     @staticmethod
     def _provider(config):
@@ -281,7 +291,7 @@ class AutoTrader:
 
     def _review_token(self, config=None, position_limit_pct=None):
         config = config or self.config()
-        value = {"config": config, "policy": POLICY,
+        value = {"config": config, "policy": policy_for(config),
                  "position_limit_pct": self.store.settings()["max_position_pct"] if position_limit_pct is None else position_limit_pct,
                  "namespace": self._namespace(config["mode"])}
         return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
@@ -305,7 +315,7 @@ class AutoTrader:
     def state(self):
         with self.store.connection() as db:
             db.execute("BEGIN")
-            config = json.loads(self.store.meta(db, "auto_config"))
+            config = {**copy.deepcopy(DEFAULTS), **json.loads(self.store.meta(db, "auto_config"))}
             position_limit_pct = json.loads(self.store.meta(db, "settings"))["max_position_pct"]
         with self.state_lock:
             info = copy.deepcopy(self.info)
@@ -337,7 +347,7 @@ class AutoTrader:
                 orders.append(item)
             configured = self.store.meta(db, "auto_configured") == "yes"
         return {**info, "running": self.running.is_set(), "mode": config["mode"], "config": config,
-                "configured": configured, "policy": POLICY, "events": events, "orders": orders,
+                "configured": configured, "policy": policy_for(config), "strategies": catalog(), "events": events, "orders": orders,
                 "position_limit_pct": position_limit_pct, "review_token": self._review_token(config, position_limit_pct),
                 "preview": preview, "account": account if account and account.get("mode") == config["mode"] else None,
                 "connection": {"configured": bool(connection), "provider": provider,
@@ -692,7 +702,7 @@ class AutoTrader:
                     self._daily(db, self._namespace(config["mode"]), account, self.clock())
                 self.running.set()
                 self._info(status="running", message="자동매매를 시작했습니다. 시세·신호·계좌 한도를 점검합니다.")
-                self._event("started", f"{config['mode']} 자동매매 시작 · {POLICY}")
+                self._event("started", f"{config['mode']} 자동매매 시작 · {policy_for(config)}")
                 if not self.thread.is_alive():
                     self.thread = threading.Thread(target=self._loop, name="personal-autotrade", daemon=True)
                     self.thread.start()
@@ -860,7 +870,7 @@ class AutoTrader:
             limits = {"automation": config, "account": {"cash": account["cash"], "equity": account["equity"]},
                       "daily": daily, "ledger": self.store.settings()}
             db.execute("UPDATE auto_intents SET policy=?,decision=?,risk_config=? WHERE id=?",
-                       (POLICY, json.dumps(evidence, allow_nan=False), json.dumps(limits, allow_nan=False), identifier))
+                       (policy_for(config), json.dumps(evidence, allow_nan=False), json.dumps(limits, allow_nan=False), identifier))
         return {"id": identifier, "namespace": namespace, "mode": config["mode"], "symbol": code, "side": side, "quantity": quantity, "price": price}
 
     def _cycle(self, *, execute):
@@ -900,6 +910,8 @@ class AutoTrader:
                 try:
                     history = quote["history"] if config["mode"] == "paper" else self.broker.history(code)
                     decision = signal(history, at, synthetic=source == "demo")
+                    if not own:
+                        decision = evaluate(history, at, config.get("strategy", "breakout20"), synthetic=source == "demo", current_price=quote["price"])
                 except Exception:
                     if not stop_hit:
                         raise ValueError("확정 일봉을 확인하지 못해 신호 판단을 보류합니다.") from None
@@ -916,10 +928,10 @@ class AutoTrader:
                     quantity = own["quantity"] if side else 0
                 elif code in held:
                     reason = "기존 수동 보유분은 자동매매가 관리하지 않습니다."
-                elif decision["breakout"]:
-                    if price <= decision["breakout_level"] or price <= decision["ma20"]:
+                elif decision.get("entry", decision["breakout"]):
+                    if not decision.get("current_entry", price > decision["breakout_level"] and price > decision["ma20"]):
                         raise ValueError("현재 시세에서 돌파·상승 추세가 유지되지 않아 매수를 보류합니다.")
-                    side, reason = "buy", "확정 종가가 앞선 20일 최고 종가를 돌파했습니다."
+                    side, reason = "buy", decision.get("explanation", "확정 종가가 앞선 20일 최고 종가를 돌파했습니다.")
                     if self._position_count(account) >= config["max_positions"]:
                         raise ValueError("계좌의 최대 보유 종목 수 한도입니다.")
                     budget = min(config["order_budget"], account["cash"])
@@ -933,7 +945,7 @@ class AutoTrader:
                         quantity = min(quantity, 1000000, int(numeric(power.get("quantity"), 0, Decimal("1e15"))), int(numeric(power.get("cash"), 0, Decimal("1e15")) / (Decimal(price) * Decimal("1.01"))))
                     if quantity < 1:
                         raise ValueError("예산·현금·계좌 비중 한도 내에서 1주를 주문할 수 없습니다.")
-                preview.append({"symbol": code, "action": side or "wait", "reason": reason, "signal_date": decision["signal_date"], "quantity": quantity, "price": price, "policy": POLICY,
+                preview.append({"symbol": code, "action": side or "wait", "reason": reason, "signal_date": decision["signal_date"], "quantity": quantity, "price": price, "policy": policy_for(config),
                                 "close": decision["close"], "ma20": decision["ma20"]})
                 if side and execute and self.running.is_set():
                     self._execute(config, account, quote, side, quantity, decision, at)
@@ -1004,7 +1016,7 @@ class AutoTrader:
                     raise ValueError("수동 거래로 보유 수량이 바뀌었습니다.")
             try:
                 result = self.store.order({"symbol": code, "side": side, "quantity": quantity,
-                                           "idempotency_key": "auto-" + intent["id"], "note": "자동매매 " + POLICY}, quotes, guard=guard)
+                                           "idempotency_key": "auto-" + intent["id"], "note": "자동매매 " + policy_for(config)}, quotes, guard=guard)
             except Exception:
                 self._status(intent["id"], "rejected")
                 raise

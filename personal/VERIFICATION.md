@@ -2,6 +2,48 @@
 
 Baseline: upstream `53afbbb`. Extension: `personal-kr-paper`.
 
+## Strategy suggestions and Android extension — 2026-10-09
+
+The personal lane now supports four completed-close entry conditions. Existing
+breakout defaults, broker execution selection, exit rules and risk limits remain.
+New strategies can be selected for the local paper ledger only. The development
+adoption record is `STRATEGY_REVIEW.md`; profitability/holdout and original
+screening/LLM compatibility are not claims of this extension.
+
+The suggestion path is saved symbols → public `Market` quotes/history → pure
+`strategies.evaluate` comparison → read-only account/risk observations → visible
+facts/checks/risks/final suggestion → local bounded history. It never calls
+submission, fills, reconciliation, automation start or daily baseline creation.
+Optional chart absence does not hide a confirmed owned-position stop condition;
+buy-only limits do not block exit observations. Stale/source-invalid/missing data
+or execution blockers produce no actionable quantity. Broker quotes and buying
+power still must be revalidated by the existing execution lane.
+
+Pre-deployment verification with bundled Python 3.12:
+
+- 190 offline standard-library tests passed, including same-candidate baseline
+  comparison, new strategy counterexamples/55-bar boundary/today exclusion,
+  legacy configuration preservation, paper fill/deduplication and original exits.
+- Suggestions verify ledger/baseline invariance, source/staleness/unknown handling,
+  owned-stop priority, manual holding isolation, daily/position limits and stopped
+  restart. A strict fake broker verifies unavailable accounts never become paper.
+- Mobile tests verify one-use five-minute codes, attempt limits, 12-hour Secure /
+  HttpOnly / SameSite sessions, logout/revocation, unauthenticated API rejection,
+  Host/Origin/CSRF checks and desktop-only credentials/device management. Both
+  servers bind loopback; the optional mobile port is distinct from the PC port.
+- Headless Edge at 1440/390 pixels passed four-strategy explanation and actual
+  check values, open-detail retention through polling, autonomous suggestion
+  start/stop, strategy persistence, pairing, PNG manifest icons and width checks.
+  Static-only cache was inspected; offline navigation blocked account/order use
+  and a fresh reload restored the screen. The test used synthetic prices and no
+  broker order. JavaScript syntax and diff-format checks passed.
+
+This is an installable web app using private HTTPS proxy access, not a Play Store
+APK. Tailscale Serve configuration, exact-head CI, deployment health and read-only
+public-provider smoke are verified separately. Actual Android device installation,
+off-network device reachability and the first scheduled real broker trading run
+remain unobserved. No real order is used as a deployment test.
+
 This is a separate, manual Korean paper ledger. Upstream screening, strategies,
 BUY/SELL prompts, broker execution, production services and scheduled batches are
 unchanged. Original automated-strategy compatibility and profitability are not

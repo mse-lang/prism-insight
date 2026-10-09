@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171b31">
+  <meta name="referrer" content="no-referrer">
+  <title>PRISM · 내 기기 연결</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/advisor.css">
+  <script src="/static/login.js" defer></script>
+</head>
+<body class="mobile-login-page">
+  <main class="mobile-login">
+    <section class="mobile-login-card" aria-labelledby="login-title">
+      <div class="mobile-login-brand"><img src="/static/icon.svg" alt="" width="43" height="43"><div><strong>PRISM</strong><span>MY DESK</span></div></div>
+      <h1 id="login-title">내 기기 연결</h1>
+      <p class="mobile-login-intro">PC의 투자 데스크에서 발급한<br>8자리 연결 코드를 입력하세요.</p>
+      <form id="mobile-login-form" autocomplete="off">
+        <label for="mobile-login-code">일회용 연결 코드</label>
+        <input id="mobile-login-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" placeholder="00000000" required autofocus aria-describedby="mobile-login-help">
+        <button id="mobile-login-button" type="submit">투자 데스크에 연결</button>
+      </form>
+      <p id="mobile-login-help" class="mobile-login-help">코드가 만료되면 PC에서 새 코드를 발급하세요.<br>증권사 비밀번호나 API 키는 입력하지 않습니다.</p>
+      <p id="mobile-login-message" class="mobile-login-message" role="alert" aria-live="polite"></p>
+      <p class="mobile-login-footer">이 기기는 연결된 PC 서버를 사용합니다.</p>
+    </section>
+  </main>
+</body>
+</html>

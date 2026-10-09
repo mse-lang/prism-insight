@@ -90,9 +90,16 @@
     let body;
     try { body = await response.json(); }
     catch (_) { throw new Error("서버 응답을 읽을 수 없습니다. 앱의 실행 상태를 확인하세요."); }
-    if (!response.ok) throw new Error(body.error || "요청을 처리하지 못했습니다.");
+    if (!response.ok) {
+      const error = new Error(body.error || "요청을 처리하지 못했습니다.");
+      error.status = response.status;
+      error.code = body.code;
+      if (response.status === 401) location.replace("/login");
+      throw error;
+    }
     return body;
   }
+  window.deskApi = api;
   async function busy(button, action) {
     button.disabled = true;
     try { return await action(); }
@@ -100,11 +107,11 @@
   }
   function currentView() {
     const requested = location.hash.replace("#", "");
-    return ["dashboard", "portfolio", "journal", "autotrade", "settings"].includes(requested) ? requested : "dashboard";
+    return ["dashboard", "portfolio", "journal", "autotrade", "advisor", "settings"].includes(requested) ? requested : "dashboard";
   }
   function renderView() {
     const view = currentView();
-    const labels = { dashboard: "대시보드", portfolio: "포트폴리오", journal: "거래일지", autotrade: "자동매매", settings: "설정" };
+    const labels = { dashboard: "대시보드", portfolio: "포트폴리오", journal: "거래일지", autotrade: "자동매매", advisor: "매매 제안", settings: "설정" };
     document.querySelectorAll(".view").forEach((element) => element.classList.toggle("hidden", element.id !== "view-" + view));
     document.querySelectorAll(".nav-link").forEach((element) => {
       element.classList.toggle("active", element.dataset.view === view);
@@ -166,6 +173,8 @@
     renderJournal();
     updateOrder();
     if (state.autotrade) setAutotrade(state.autotrade);
+    renderMobile();
+    document.dispatchEvent(new Event("desk-state"));
   }
 
   let accountView = null;
@@ -751,6 +760,7 @@
   function populateAutoConfig() {
     const config = autotrade?.config || {};
     $("auto-mode").value = config.mode || autotrade?.mode || "paper";
+    $("auto-strategy").value = config.strategy || "breakout20";
     $("auto-symbols").value = (config.symbols || []).join(", ");
     Object.entries(autoFields).forEach(([field, id]) => $(id).value = config[field] ?? "");
     autoConfigDirty = false;
@@ -758,6 +768,9 @@
   }
   function updateAutoModeHelp() {
     const mode = $("auto-mode").value;
+    $("auto-strategy").querySelectorAll("option").forEach((option) => option.disabled = mode !== "paper" && option.value !== "breakout20");
+    const strategy = (autotrade?.strategies || []).find((row) => row.id === $("auto-strategy").value);
+    $("auto-strategy-help").textContent = (strategy ? strategy.description + " 완료 일봉 " + strategy.min_bars + "개가 필요합니다. " : "") + "새 전략은 로컬 모의매매에서 비교합니다. 기존 청산과 거래 한도는 유지합니다.";
     $("auto-mode-help").textContent = mode === "toss-live" ? "토스증권 API 키와 허용 IP를 설정하고 조회한 실계좌를 선택하세요. 시작 전 저장된 계좌와 한도를 다시 확인합니다." : mode === "kis-live" ? "한국투자 실전투자 앱 키와 실계좌를 연결해야 합니다. 시작 전 저장된 계좌와 한도를 다시 확인합니다." : mode === "kis-paper" ? "한국투자증권 모의투자 앱 키와 모의 계좌가 필요합니다. 증권사의 모의 주문으로 접수합니다." : "이 앱의 로컬 모의 계좌에서 주문을 기록합니다. 증권사 주문을 보내지 않습니다.";
   }
   function isLiveMode(mode) { return mode === "kis-live" || mode === "toss-live"; }
@@ -1079,7 +1092,7 @@
     event.preventDefault();
     const symbols = [...new Set($("auto-symbols").value.split(/[\s,;]+/).filter(Boolean))];
     if (!symbols.length || symbols.length > 20 || symbols.some((symbol) => !/^\d{6}$/.test(symbol))) { autoAlert("1~20개의 6자리 종목 코드를 입력하세요."); return; }
-    const payload = { mode: $("auto-mode").value, symbols };
+    const payload = { mode: $("auto-mode").value, strategy: $("auto-strategy").value, symbols };
     Object.entries(autoFields).forEach(([field, id]) => payload[field] = Number($(id).value));
     if (payload.order_budget > payload.max_daily_buy) { autoAlert("주문당 매수 예산은 하루 최대 매수금액 이하여야 합니다."); return; }
     if (await autoAction("/api/autotrade/config", payload)) { populateAutoConfig(); renderAutoControls(); showToast("자동매매 설정을 저장했습니다."); }
@@ -1133,6 +1146,30 @@
   window.addEventListener("hashchange", renderView);
   window.addEventListener("beforeunload", () => { clearTimeout(jobTimer); clearTimeout(searchTimer); clearTimeout(autoPollTimer); });
   $("today").textContent = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).format(new Date());
+  function renderMobile() {
+    if (!state) return;
+    const mobile = state.mobile || {};
+    const remote = mobile.origin === location.origin;
+    $("mobile-status").textContent = mobile.enabled ? "비공개 보안 연결 준비됨 · 연결된 기기 " + (mobile.paired_devices || 0) + "개" : "서버에 모바일 보안 주소를 설정해야 합니다.";
+    $("mobile-url").textContent = mobile.origin || "";
+    if (mobile.origin) $("mobile-url").href = mobile.origin;
+    $("mobile-pc-controls").classList.toggle("hidden", remote);
+    $("mobile-logout").classList.toggle("hidden", !remote);
+    $("mobile-pair").disabled = !mobile.enabled;
+    $("broker-connect-form").classList.toggle("hidden", remote);
+    $("broker-disconnect-button").classList.toggle("hidden", remote);
+  }
+  ["mobile-pair", "mobile-revoke"].forEach((id) => $(id).addEventListener("click", () => busy($(id), async () => {
+    try {
+      const result = await api(id === "mobile-pair" ? "/api/mobile/pair" : "/api/mobile/revoke", {});
+      $("mobile-code").textContent = result.code ? result.code + " · 5분 동안 한 번만 사용" : "모든 기기 연결을 해제했습니다.";
+      if (result.code) setTimeout(() => { $("mobile-code").textContent = "코드가 만료되었습니다. 새 코드를 발급하세요."; }, result.expires_in * 1000);
+      state.mobile = await api("/api/mobile");
+      renderMobile();
+    } catch (error) { showToast(error.message); }
+  })));
+  $("mobile-logout").addEventListener("click", async () => { try { await api("/api/mobile/logout", {}); location.replace("/login"); } catch (error) { showToast(error.message); } });
+  document.addEventListener("desk-state", renderMobile);
   renderView();
   refreshState(true);
 })();
